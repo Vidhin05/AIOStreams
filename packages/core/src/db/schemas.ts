@@ -234,6 +234,7 @@ export type Option = z.infer<typeof OptionDefinition>;
 const NameableRegex = z.object({
   name: z.string().min(0),
   pattern: z.string().min(1),
+  score: z.number().int().min(-100000).max(100000).default(10), // Score value for this regex pattern
 });
 
 const Group = z.object({
@@ -683,6 +684,12 @@ export const ParsedStreamSchema = z.object({
       index: z.number(),
     })
     .optional(),
+  regexMatches: z.array(z.object({
+    name: z.string(),
+    pattern: z.string().min(1),
+    score: z.number().int(),
+  })).optional(),
+  regexTotalScore: z.number().int().optional(),
   keywordMatched: z.boolean().optional(),
   streamExpressionMatched: z.number().optional(),
   size: z.number().optional(),
@@ -760,6 +767,12 @@ export const AIOStream = StreamSchema.extend({
         index: z.number(),
       })
       .optional(),
+    regexMatches: z.array(z.object({
+      name: z.string(),
+      pattern: z.string().min(1),
+      score: z.number().int(),
+    })).optional(),
+    regexTotalScore: z.number().int().optional(),
     keywordMatched: z.boolean().optional(),
     streamExpressionMatched: z.number().optional(),
     size: z.number().optional(),

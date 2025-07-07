@@ -79,6 +79,7 @@ import { toast } from 'sonner';
 import { Slider } from '../ui/slider/slider';
 import { TbFilterCode } from 'react-icons/tb';
 import { PasswordInput } from '../ui/password-input';
+import { XIcon } from 'lucide-react';
 
 type Resolution = (typeof RESOLUTIONS)[number];
 type Quality = (typeof QUALITIES)[number];
@@ -1714,19 +1715,14 @@ function Content() {
                     }));
                   }}
                 />
-                <TwoTextInputs
+                <RegexScoringInputs
                   title="Preferred Regex Patterns"
-                  description="Define regex patterns with names for easy reference"
-                  keyName="Name"
-                  keyId="name"
-                  keyPlaceholder="Enter pattern name"
-                  valueId="pattern"
-                  valueName="Pattern"
-                  valuePlaceholder="Enter regex pattern"
+                  description="Define regex patterns with scores for ranking. Each pattern can be assigned a score (-100000 to +100000) for fine-grained sorting control."
                   values={(userData.preferredRegexPatterns || []).map(
                     (pattern) => ({
                       name: pattern.name,
-                      value: pattern.pattern,
+                      pattern: pattern.pattern,
+                      score: pattern.score || 10,
                     })
                   )}
                   onValuesChange={(values) => {
@@ -1734,31 +1730,19 @@ function Content() {
                       ...prev,
                       preferredRegexPatterns: values.map((v) => ({
                         name: v.name,
-                        pattern: v.value,
+                        pattern: v.pattern,
+                        score: v.score,
                       })),
                     }));
                   }}
-                  onValueChange={(value, index) => {
+                  onValueChange={(field, value, index) => {
                     setUserData((prev) => ({
                       ...prev,
                       preferredRegexPatterns: [
                         ...(prev.preferredRegexPatterns || []).slice(0, index),
                         {
                           ...(prev.preferredRegexPatterns || [])[index],
-                          pattern: value,
-                        },
-                        ...(prev.preferredRegexPatterns || []).slice(index + 1),
-                      ],
-                    }));
-                  }}
-                  onKeyChange={(key, index) => {
-                    setUserData((prev) => ({
-                      ...prev,
-                      preferredRegexPatterns: [
-                        ...(prev.preferredRegexPatterns || []).slice(0, index),
-                        {
-                          ...(prev.preferredRegexPatterns || [])[index],
-                          name: key,
+                          [field]: value,
                         },
                         ...(prev.preferredRegexPatterns || []).slice(index + 1),
                       ],
@@ -2861,6 +2845,153 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+type RegexScoringInputProps = {
+  title: string;
+  description: string;
+  values: { name: string; pattern: string; score: number }[];
+  onValuesChange: (values: { name: string; pattern: string; score: number }[]) => void;
+  onValueChange: (field: 'name' | 'pattern' | 'score', value: string | number, index: number) => void;
+};
+
+function RegexScoringInputs({
+  title,
+  description,
+  values,
+  onValuesChange,
+  onValueChange,
+}: RegexScoringInputProps) {
+  const [importModalOpen, setImportModalOpen] = useState(false);
+
+  const handleImport = (data: any) => {
+    if (Array.isArray(data)) {
+      const validValues = data
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          name: String(item.name || ''),
+          pattern: String(item.pattern || ''),
+          score: typeof item.score === 'number' ? item.score : 10,
+        }));
+      onValuesChange(validValues);
+    }
+  };
+
+  const handleExport = () => {
+    const blob = new Blob([JSON.stringify(values, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${title.toLowerCase().replace(/\s+/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <SettingsCard title={title} description={description}>
+      <div className="space-y-4">
+        <div className="flex justify-between items-center gap-2">
+          <div className="flex gap-2">
+            <Button
+              intent="primary-outline"
+              size="sm"
+              onClick={() => setImportModalOpen(true)}
+            >
+              Import
+            </Button>
+            <Button
+              intent="primary-outline"
+              size="sm"
+              onClick={handleExport}
+              disabled={values.length === 0}
+            >
+              Export
+            </Button>
+          </div>
+          <Button
+            intent="primary"
+            size="sm"
+            onClick={() =>
+              onValuesChange([...values, { name: '', pattern: '', score: 10 }])
+            }
+          >
+            Add Pattern
+          </Button>
+        </div>
+
+        <div className="space-y-3">
+          {values.map((value, index) => (
+            <div
+              key={index}
+              className="flex flex-col sm:flex-row gap-3 p-3 bg-[--subtle] rounded-[--radius-md] border"
+            >
+              <div className="flex-1 space-y-3 sm:space-y-0 sm:flex sm:gap-3">
+                <div className="flex-1">
+                  <TextInput
+                    label="Name"
+                    value={value.name}
+                    onValueChange={(newValue) =>
+                      onValueChange('name', newValue, index)
+                    }
+                    placeholder="Enter pattern name (e.g., 4K HDR)"
+                  />
+                </div>
+                <div className="flex-[2]">
+                  <TextInput
+                    label="Pattern"
+                    value={value.pattern}
+                    onValueChange={(newValue) =>
+                      onValueChange('pattern', newValue, index)
+                    }
+                    placeholder="Enter regex pattern"
+                  />
+                </div>
+                <div className="w-full sm:w-24">
+                  <NumberInput
+                    label="Score"
+                    value={value.score}
+                    min={-1000}
+                    max={1000}
+                    onValueChange={(newValue) =>
+                      onValueChange('score', newValue || 10, index)
+                    }
+                  />
+                </div>
+              </div>
+              <div className="flex sm:flex-col justify-center">
+                <IconButton
+                  intent="alert-outline"
+                  size="sm"
+                  rounded
+                  icon={<XIcon className="w-4 h-4" />}
+                  onClick={() =>
+                    onValuesChange(values.filter((_, i) => i !== index))
+                  }
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {values.length === 0 && (
+          <div className="text-center py-8 text-[--muted]">
+            <p>No regex patterns configured</p>
+            <p className="text-sm mt-1">
+              Add patterns to prioritize streams with scoring
+            </p>
+          </div>
+        )}
+      </div>
+
+      <ImportModal
+        open={importModalOpen}
+        onOpenChange={setImportModalOpen}
+        onImport={handleImport}
+      />
+    </SettingsCard>
+  );
 }
 
 function SizeRangeSlider({

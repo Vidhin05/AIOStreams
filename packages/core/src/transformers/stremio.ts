@@ -154,6 +154,8 @@ export class StremioTransformer {
             parsedFile: stream.parsedFile,
             message: stream.message,
             regexMatched: stream.regexMatched,
+            regexMatches: stream.regexMatches,
+            regexTotalScore: stream.regexTotalScore,
             keywordMatched: stream.keywordMatched,
             id: stream.id,
           },

@@ -25,6 +25,7 @@ class StreamPrecomputer {
             this.userData.preferredRegexPatterns.map(async (pattern) => {
               return {
                 name: pattern.name,
+                score: pattern.score || 10, // Default score if not present
                 negate: parseRegex(pattern.pattern).flags.includes('n'),
                 pattern: await compileRegex(pattern.pattern),
               };
@@ -59,6 +60,10 @@ class StreamPrecomputer {
     };
     if (preferredRegexPatterns) {
       streams.forEach((stream) => {
+        const allMatches: Array<{name: string, pattern: string, score: number}> = [];
+        let totalScore = 0;
+        let firstMatchIndex: number | undefined;
+
         for (let i = 0; i < preferredRegexPatterns.length; i++) {
           // if negate, then the pattern must not match any of the attributes
           // and if the attribute is undefined, then we can consider that as a non-match so true
@@ -90,13 +95,30 @@ class StreamPrecomputer {
             indexerMatch;
           match = regexPattern.negate ? !match : match;
           if (match) {
-            stream.regexMatched = {
+            // Collect all matches for new scoring system
+            allMatches.push({
               name: regexPattern.name,
               pattern: regexPattern.pattern.source,
-              index: i,
-            };
-            break;
+              score: regexPattern.score,
+            });
+            totalScore += regexPattern.score;
+
+            // Keep backward compatibility - store first match for legacy regexMatched field
+            if (firstMatchIndex === undefined) {
+              firstMatchIndex = i;
+              stream.regexMatched = {
+                name: regexPattern.name,
+                pattern: regexPattern.pattern.source,
+                index: i,
+              };
+            }
           }
+        }
+
+        // Set new scoring fields
+        if (allMatches.length > 0) {
+          stream.regexMatches = allMatches;
+          stream.regexTotalScore = totalScore;
         }
       });
     }

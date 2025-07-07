@@ -247,11 +247,26 @@ export function getEnvironmentServiceDetails(): typeof constants.SERVICE_DETAILS
   ) as typeof constants.SERVICE_DETAILS;
 }
 
-export async function validateConfig(
+export function migrateRegexPatterns(config: UserData): UserData {
+  // Migrate preferredRegexPatterns to include score field if missing
+  if (config.preferredRegexPatterns) {
+    config.preferredRegexPatterns = config.preferredRegexPatterns.map((pattern) => ({
+      name: pattern.name,
+      pattern: pattern.pattern,
+      score: pattern.score ?? 10, // Default score for existing patterns
+    }));
+  }
+  return config;
+}
+
+async function validateConfig(
   data: any,
   skipErrorsFromAddonsOrProxies: boolean = false,
   decryptValues: boolean = false
 ): Promise<UserData> {
+  // Apply migrations before validation
+  data = migrateRegexPatterns(data);
+  
   const { success, data: config, error } = UserDataSchema.safeParse(data);
   if (!success) {
     throw new Error(formatZodError(error));

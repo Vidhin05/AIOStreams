@@ -266,7 +266,7 @@ class StreamSorter {
         case 'regexPatterns':
           return (
             multiplier *
-            -(stream.regexMatched ? stream.regexMatched.index : Infinity)
+            (stream.regexTotalScore ?? (stream.regexMatched ? -stream.regexMatched.index : -Infinity))
           );
         case 'streamExpressionMatched':
           return multiplier * -(stream.streamExpressionMatched ?? Infinity);

@@ -686,12 +686,12 @@ export const SORT_CRITERIA_DETAILS = {
   regexPatterns: {
     name: 'Regex Patterns',
     description:
-      'Whether the stream matches any of your preferred regex patterns',
+      'Sort by total score from matching regex patterns. Streams get scored based on all matching patterns.',
     defaultDirection: 'desc',
     ascendingDescription:
-      'Streams that do not match your preferred regex patterns are preferred',
+      'Streams with lower regex scores are preferred (negative scores first)',
     descendingDescription:
-      'Streams that match your preferred regex patterns are preferred',
+      'Streams with higher regex scores are preferred (positive scores first)',
   },
   cached: {
     name: 'Cached',
