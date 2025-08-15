@@ -43,8 +43,9 @@ const StreamProxyConfig = z.object({
   enabled: z.boolean().optional(),
   id: z.enum(constants.PROXY_SERVICES).optional(),
   url: z.string().optional(),
+  publicUrl: z.string().optional(),
   credentials: z.string().optional(),
-  publicIp: z.string().ip().optional(),
+  publicIp: z.union([z.string().ip(), z.literal('')]).optional(),
   proxiedAddons: z.array(z.string().min(1)).optional(),
   proxiedServices: z.array(z.string().min(1)).optional(),
 });
@@ -106,8 +107,11 @@ const ResourceList = z.array(ResourceSchema);
 
 const AddonSchema = z.object({
   instanceId: z.string().min(1).optional(), // uniquely identifies the addon in a given list of addons
-  presetType: z.string().min(1), // reference to the type of the preset that created this addon
-  presetInstanceId: z.string().min(1), // reference to the instance id of the preset that created this addon
+  preset: z.object({
+    id: z.string(),
+    type: z.string(),
+    options: z.record(z.string(), z.any()),
+  }),
   manifestUrl: z.string().url(),
   enabled: z.boolean(),
   resources: ResourceList.optional(),
@@ -117,6 +121,8 @@ const AddonSchema = z.object({
   timeout: z.number().min(1),
   library: z.boolean().optional(),
   streamPassthrough: z.boolean().optional(),
+  resultPassthrough: z.boolean().optional(),
+  forceToTop: z.boolean().optional(),
   headers: z.record(z.string().min(1), z.string().min(1)).optional(),
   ip: z.string().ip().optional(),
 });
@@ -154,6 +160,9 @@ const DeduplicatorMode = z.enum([
 
 const DeduplicatorOptions = z.object({
   enabled: z.boolean().optional(),
+  multiGroupBehaviour: z
+    .enum(['remove_uncached', 'remove_nothing', 'remove_uncached_same_service'])
+    .optional(),
   keys: z.array(DeduplicatorKey).optional(),
   cached: DeduplicatorMode.optional(),
   uncached: DeduplicatorMode.optional(),
@@ -179,10 +188,19 @@ const OptionDefinition = z.object({
     'url',
     'alert',
     'socials',
+    'oauth',
   ]),
+  oauth: z
+    .object({
+      authorisationUrl: z.string().url(),
+      oauthResultField: z.object({
+        name: z.string().min(1),
+        description: z.string().min(1),
+      }),
+    })
+    .optional(),
   required: z.boolean().optional(),
   default: z.any().optional(),
-  // sensitive: z.boolean().optional(),
   forced: z.any().optional(),
   options: z
     .array(
@@ -225,6 +243,7 @@ const OptionDefinition = z.object({
     .object({
       min: z.number().min(1).optional(), // for string inputs, consider this the minimum length.
       max: z.number().min(1).optional(), // and for number inputs, consider this the minimum and maximum value.
+      forceInUi: z.boolean().optional(), // if true, the UI components will enforce these constraints.
     })
     .optional(),
 });
@@ -339,6 +358,7 @@ export const UserDataSchema = z.object({
   requiredStreamExpressions: z.array(z.string().min(1).max(3000)).optional(),
   preferredStreamExpressions: z.array(z.string().min(1).max(3000)).optional(),
   includedStreamExpressions: z.array(z.string().min(1).max(3000)).optional(),
+  disableGroups: z.boolean().optional(),
   groups: z
     .array(
       z.object({
@@ -367,6 +387,7 @@ export const UserDataSchema = z.object({
     uncachedAnime: z.array(SortCriterion).optional(),
   }),
   rpdbApiKey: z.string().optional(),
+  rpdbUseRedirectApi: z.boolean().optional(),
   formatter: Formatter,
   proxy: StreamProxyConfig.optional(),
   resultLimits: ResultLimitOptions.optional(),
@@ -374,11 +395,22 @@ export const UserDataSchema = z.object({
   hideErrors: z.boolean().optional(),
   hideErrorsForResources: z.array(ResourceSchema).optional(),
   showStatistics: z.boolean().optional(),
+  statisticsPosition: z.enum(['top', 'bottom']).optional(),
   tmdbAccessToken: z.string().optional(),
+  tmdbApiKey: z.string().optional(),
+  yearMatching: z
+    .object({
+      enabled: z.boolean().optional(),
+      tolerance: z.number().min(0).max(100).optional(),
+      requestTypes: z.array(z.string()).optional(),
+      addons: z.array(z.string()).optional(),
+    })
+    .optional(),
   titleMatching: z
     .object({
       mode: z.enum(['exact', 'contains']).optional(),
       matchYear: z.boolean().optional(),
+      yearTolerance: z.number().min(0).max(100).optional(),
       enabled: z.boolean().optional(),
       requestTypes: z.array(z.string()).optional(),
       addons: z.array(z.string()).optional(),
@@ -417,7 +449,7 @@ export const TABLES = {
 const strictManifestResourceSchema = z.object({
   name: z.enum(constants.RESOURCES),
   types: z.array(z.string()),
-  idPrefixes: z.array(z.string().min(1)).or(z.null()).optional(),
+  idPrefixes: z.array(z.string()).or(z.null()).optional(),
 });
 
 export type StrictManifestResource = z.infer<
@@ -455,7 +487,7 @@ export const ManifestSchema = z
     description: z.string(),
     version: z.string(),
     types: z.array(z.string()),
-    idPrefixes: z.array(z.string().min(1)).or(z.null()).optional(),
+    idPrefixes: z.array(z.string()).or(z.null()).optional(),
     resources: z.array(ManifestResourceSchema),
     catalogs: z.array(ManifestCatalogSchema),
     addonCatalogs: z.array(AddonCatalogDefinitionSchema).optional(),
@@ -535,123 +567,6 @@ export type StreamResponse = z.infer<typeof StreamResponseSchema>;
 
 export type Stream = z.infer<typeof StreamSchema>;
 
-const TrailerSchema = z
-  .object({
-    source: z.string().min(1),
-    type: z.enum(['Trailer', 'Clip']),
-  })
-  .passthrough();
-
-const MetaLinkSchema = z
-  .object({
-    name: z.string().min(1),
-    category: z.string().min(1),
-    url: z.string().url().or(z.string().startsWith('stremio:///')),
-  })
-  .passthrough();
-
-const MetaVideoSchema = z
-  .object({
-    id: z.string().min(1),
-    title: z.string().or(z.null()).optional(),
-    name: z.string().or(z.null()).optional(),
-    released: z.string().datetime().or(z.null()).optional(),
-    thumbnail: z.string().url().or(z.null()).optional(),
-    streams: z.array(StreamSchema).or(z.null()).optional(),
-    available: z.boolean().or(z.null()).optional(),
-    episode: z.number().or(z.null()).optional(),
-    season: z.number().or(z.null()).optional(),
-    trailers: z.array(TrailerSchema).or(z.null()).optional(),
-    overview: z.string().or(z.null()).optional(),
-  })
-  .passthrough();
-
-export const MetaPreviewSchema = z
-  .object({
-    id: z.string().min(1),
-    type: z.string().min(1),
-    name: z.string().or(z.null()).optional(),
-    poster: z.string().or(z.null()).optional(),
-    posterShape: z
-      .enum(['square', 'poster', 'landscape', 'regular'])
-      .optional(),
-    // discover sidebar
-    //@deprecated use links instead
-    genres: z.array(z.string()).or(z.null()).optional(),
-    imdbRating: z.string().or(z.null()).or(z.number()).optional(),
-    releaseInfo: z.string().or(z.number()).or(z.null()).optional(),
-    //@deprecated
-    director: z.array(z.string()).or(z.null()).optional(),
-    //@deprecated
-    cast: z.array(z.string()).or(z.null()).optional(),
-    // background: z.string().min(1).optional(),
-    // logo: z.string().min(1).optional(),
-    description: z.string().or(z.null()).optional(),
-    trailers: z.array(TrailerSchema).or(z.null()).optional(),
-    links: z.array(MetaLinkSchema).or(z.null()).optional(),
-    // released: z.string().datetime().optional(),
-  })
-  .passthrough();
-
-export const MetaSchema = MetaPreviewSchema.extend({
-  poster: z.string().or(z.null()).optional(),
-  background: z.string().or(z.null()).optional(),
-  logo: z.string().or(z.null()).optional(),
-  videos: z.array(MetaVideoSchema).or(z.null()).optional(),
-  runtime: z.coerce.string().or(z.null()).optional(),
-  language: z.string().or(z.null()).optional(),
-  country: z.string().or(z.null()).optional(),
-  awards: z.string().or(z.null()).optional(),
-  website: z.string().url().or(z.null()).optional(),
-  behaviorHints: z
-    .object({
-      defaultVideoId: z.string().or(z.null()).optional(),
-    })
-    .optional(),
-}).passthrough();
-
-export const MetaResponseSchema = z.object({
-  meta: MetaSchema,
-});
-export const CatalogResponseSchema = z.object({
-  metas: z.array(MetaPreviewSchema),
-});
-export type MetaResponse = z.infer<typeof MetaResponseSchema>;
-export type CatalogResponse = z.infer<typeof CatalogResponseSchema>;
-export type Meta = z.infer<typeof MetaSchema>;
-export type MetaPreview = z.infer<typeof MetaPreviewSchema>;
-
-export const AddonCatalogSchema = z
-  .object({
-    transportName: z.literal('http'),
-    transportUrl: z.string().url(),
-    manifest: ManifestSchema,
-  })
-  .passthrough();
-export const AddonCatalogResponseSchema = z.object({
-  addons: z.array(AddonCatalogSchema),
-});
-export type AddonCatalogResponse = z.infer<typeof AddonCatalogResponseSchema>;
-export type AddonCatalog = z.infer<typeof AddonCatalogSchema>;
-
-export const ExtrasTypesSchema = z.enum(['skip', 'genre', 'search']);
-
-const ExtraSkipSchema = z.object({
-  skip: z.coerce.number(),
-});
-const ExtraGenreSchema = z.object({
-  genre: z.string(),
-});
-const ExtraSearchSchema = z.object({
-  search: z.string(),
-});
-export const ExtrasSchema = z.union([
-  ExtraSkipSchema,
-  ExtraGenreSchema,
-  ExtraSearchSchema,
-]);
-export type Extras = z.infer<typeof ExtrasSchema>;
-
 const ParsedFileSchema = z.object({
   releaseGroup: z.string().optional(),
   resolution: z.string().optional(),
@@ -668,8 +583,6 @@ const ParsedFileSchema = z.object({
   episode: z.number().optional(),
   seasonEpisode: z.array(z.string()).optional(),
 });
-
-export type ParsedFile = z.infer<typeof ParsedFileSchema>;
 
 export const ParsedStreamSchema = z.object({
   id: z.string().min(1),
@@ -735,10 +648,134 @@ export const ParsedStreamSchema = z.object({
   originalDescription: z.string().optional(),
 });
 
+export type ParsedFile = z.infer<typeof ParsedFileSchema>;
+
 export const ParsedStreams = z.array(ParsedStreamSchema);
 
 export type ParsedStream = z.infer<typeof ParsedStreamSchema>;
 export type ParsedStreams = z.infer<typeof ParsedStreams>;
+
+const TrailerSchema = z
+  .object({
+    source: z.string().min(1),
+    type: z.enum(['Trailer', 'Clip']),
+  })
+  .passthrough();
+
+const MetaLinkSchema = z
+  .object({
+    name: z.string().min(1),
+    category: z.string().min(1),
+    url: z.string().url().or(z.string().startsWith('stremio:///')),
+  })
+  .passthrough();
+
+const MetaVideoSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().or(z.null()).optional(),
+    name: z.string().or(z.null()).optional(),
+    released: z.string().datetime().or(z.null()).optional(),
+    thumbnail: z.string().or(z.null()).optional(),
+    streams: z.array(StreamSchema).or(z.null()).optional(),
+    available: z.boolean().or(z.null()).optional(),
+    episode: z.number().or(z.null()).optional(),
+    season: z.number().or(z.null()).optional(),
+    trailers: z.array(TrailerSchema).or(z.null()).optional(),
+    overview: z.string().or(z.null()).optional(),
+  })
+  .passthrough();
+
+const MetaParsedVideoSchema = MetaVideoSchema.extend({
+  streams: z.array(ParsedStreamSchema).or(z.null()).optional(),
+});
+
+export const MetaPreviewSchema = z
+  .object({
+    id: z.string().min(1),
+    type: z.string().min(1),
+    name: z.string().or(z.null()).optional(),
+    poster: z.string().or(z.null()).optional(),
+    posterShape: z
+      .enum(['square', 'poster', 'landscape', 'regular'])
+      .optional(),
+    // discover sidebar
+    //@deprecated use links instead
+    genres: z.array(z.string()).or(z.null()).optional(),
+    imdbRating: z.string().or(z.null()).or(z.number()).optional(),
+    releaseInfo: z.string().or(z.number()).or(z.null()).optional(),
+    //@deprecated
+    director: z
+      .union([z.array(z.string().or(z.null())), z.null(), z.string()])
+      .optional(),
+    //@deprecated
+    cast: z.array(z.string()).or(z.null()).optional(),
+    // background: z.string().min(1).optional(),
+    // logo: z.string().min(1).optional(),
+    description: z.string().or(z.null()).optional(),
+    trailers: z.array(TrailerSchema).or(z.null()).optional(),
+    links: z.array(MetaLinkSchema).or(z.null()).optional(),
+    // released: z.string().datetime().optional(),
+  })
+  .passthrough();
+
+export const MetaSchema = MetaPreviewSchema.extend({
+  poster: z.string().or(z.null()).optional(),
+  background: z.string().or(z.null()).optional(),
+  logo: z.string().or(z.null()).optional(),
+  videos: z.array(MetaVideoSchema).or(z.null()).optional(),
+  runtime: z.coerce.string().or(z.null()).optional(),
+  language: z.string().or(z.null()).optional(),
+  country: z.string().or(z.null()).optional(),
+  awards: z.string().or(z.null()).optional(),
+  website: z.string().url().or(z.null()).optional(),
+  behaviorHints: z
+    .object({
+      defaultVideoId: z.string().or(z.null()).optional(),
+    })
+    .optional(),
+}).passthrough();
+
+export const ParsedMetaSchema = MetaSchema.extend({
+  videos: z.array(MetaParsedVideoSchema).optional().nullable(),
+});
+export type ParsedMeta = z.infer<typeof ParsedMetaSchema>;
+
+export const MetaResponseSchema = z.object({
+  meta: MetaSchema,
+});
+export const CatalogResponseSchema = z.object({
+  metas: z.array(MetaPreviewSchema),
+});
+export type MetaResponse = z.infer<typeof MetaResponseSchema>;
+export type CatalogResponse = z.infer<typeof CatalogResponseSchema>;
+export type Meta = z.infer<typeof MetaSchema>;
+export type MetaPreview = z.infer<typeof MetaPreviewSchema>;
+
+export const AddonCatalogSchema = z
+  .object({
+    transportName: z.literal('http'),
+    transportUrl: z.string().url(),
+    manifest: ManifestSchema,
+  })
+  .passthrough();
+export const AddonCatalogResponseSchema = z.object({
+  addons: z.array(AddonCatalogSchema),
+});
+export type AddonCatalogResponse = z.infer<typeof AddonCatalogResponseSchema>;
+export type AddonCatalog = z.infer<typeof AddonCatalogSchema>;
+
+export const ExtrasSchema = z
+  .object({
+    skip: z.coerce.number().optional(),
+    genre: z.string().optional(),
+    search: z.string().optional(),
+    filename: z.string().optional(),
+    videoHash: z.string().optional(),
+    videoSize: z.coerce.number().optional(),
+  })
+  .passthrough();
+export type Extras = z.infer<typeof ExtrasSchema>;
 
 export const AIOStream = StreamSchema.extend({
   streamData: z.object({
@@ -814,6 +851,7 @@ const PresetMetadataSchema = z.object({
   DESCRIPTION: z.string(),
   URL: z.string(),
   TIMEOUT: z.number(),
+  BUILTIN: z.boolean().optional(),
   USER_AGENT: z.string(),
   SUPPORTED_SERVICES: z.array(z.string()),
   OPTIONS: z.array(OptionDefinition),
@@ -837,6 +875,7 @@ const PresetMinimalMetadataSchema = z.object({
   SUPPORTED_STREAM_TYPES: z.array(StreamTypes),
   SUPPORTED_SERVICES: z.array(z.string()),
   OPTIONS: z.array(OptionDefinition),
+  BUILTIN: z.boolean().optional(),
 });
 
 const StatusResponseSchema = z.object({
@@ -852,6 +891,12 @@ const StatusResponseSchema = z.object({
     customHtml: z.string().optional(),
     protected: z.boolean(),
     regexFilterAccess: z.enum(['none', 'trusted', 'all']),
+    allowedRegexPatterns: z
+      .object({
+        patterns: z.array(z.string()),
+        description: z.string().optional(),
+      })
+      .optional(),
     loggingSensitiveInfo: z.boolean(),
     tmdbApiAvailable: z.boolean(),
     forced: z.object({
@@ -859,6 +904,7 @@ const StatusResponseSchema = z.object({
         enabled: z.boolean().or(z.null()),
         id: z.string().or(z.null()),
         url: z.string().or(z.null()),
+        publicUrl: z.string().or(z.null()),
         publicIp: z.string().or(z.null()),
         credentials: z.string().or(z.null()),
         disableProxiedAddons: z.boolean(),
@@ -870,6 +916,7 @@ const StatusResponseSchema = z.object({
         enabled: z.boolean().or(z.null()),
         id: z.string().or(z.null()),
         url: z.string().or(z.null()),
+        publicUrl: z.string().or(z.null()),
         publicIp: z.string().or(z.null()),
         credentials: z.string().or(z.null()),
         proxiedServices: z.array(z.string()).or(z.null()),

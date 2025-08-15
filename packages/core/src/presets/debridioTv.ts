@@ -6,11 +6,11 @@ import {
   Stream,
   UserData,
 } from '../db';
-import { Preset, baseOptions } from './preset';
-import { constants, createLogger, Env } from '../utils';
+import { CacheKeyRequestOptions, Preset, baseOptions } from './preset';
+import { constants, Env } from '../utils';
 import { debridioSocialOption } from './debridio';
 import { FileParser, StreamParser } from '../parser';
-const logger = createLogger('DebridioTvPreset');
+
 class DebridioTvStreamParser extends StreamParser {
   protected override getParsedFile(
     stream: Stream,
@@ -20,7 +20,6 @@ class DebridioTvStreamParser extends StreamParser {
     if (!parsed) {
       return undefined;
     }
-    logger.debug(`resolution: ${parsed}`);
 
     return {
       ...parsed,
@@ -31,7 +30,6 @@ class DebridioTvStreamParser extends StreamParser {
     stream: Stream,
     currentParsedStream: ParsedStream
   ): string | undefined {
-    logger.debug('returning undefined for filename');
     return undefined;
   }
 
@@ -40,6 +38,14 @@ class DebridioTvStreamParser extends StreamParser {
     currentParsedStream: ParsedStream
   ): string | undefined {
     return `${stream.name} - ${stream.description}`;
+  }
+
+  protected getStreamType(
+    stream: Stream,
+    service: ParsedStream['service'],
+    currentParsedStream: ParsedStream
+  ): ParsedStream['type'] {
+    return constants.LIVE_STREAM_TYPE;
   }
 }
 export class DebridioTvPreset extends Preset {
@@ -60,24 +66,40 @@ export class DebridioTvPreset extends Preset {
         value: 'usa',
       },
       {
+        label: 'Canada',
+        value: 'ca',
+      },
+      {
         label: 'Mexico',
         value: 'mx',
       },
       {
-        label: 'UK',
+        label: 'United Kingdom',
         value: 'uk',
       },
       {
-        label: 'France',
-        value: 'fr',
+        label: 'Australia',
+        value: 'au',
       },
       {
         label: 'Chile',
         value: 'cl',
       },
       {
+        label: 'France',
+        value: 'fr',
+      },
+      {
         label: 'Italy',
         value: 'it',
+      },
+      {
+        label: 'South Africa',
+        value: 'za',
+      },
+      {
+        label: 'New Zealand',
+        value: 'nz',
       },
       {
         label: 'Estonia',
@@ -106,6 +128,15 @@ export class DebridioTvPreset extends Preset {
         required: true,
         options: channels,
         default: channels.map((channel) => channel.value),
+      },
+      {
+        id: 'resultPassthrough',
+        name: 'Result Passthrough',
+        description:
+          'Ensure no Debridio TV results are filtered out by anything',
+        required: false,
+        type: 'boolean',
+        default: true,
       },
       debridioSocialOption,
     ];
@@ -169,11 +200,34 @@ export class DebridioTvPreset extends Preset {
       library: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      resultPassthrough: options.resultPassthrough ?? true,
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
     };
+  }
+
+  static override getCacheKey(
+    options: CacheKeyRequestOptions
+  ): string | undefined {
+    const { resource, type, id, options: presetOptions, extras } = options;
+    try {
+      if (new URL(presetOptions.url).pathname.endsWith('/manifest.json')) {
+        return undefined;
+      }
+      if (new URL(presetOptions.url).origin !== this.METADATA.URL) {
+        return undefined;
+      }
+    } catch {}
+    let cacheKey = `${this.METADATA.ID}-${resource}-${type}-${id}-${extras}`;
+    if (resource === 'manifest') {
+      cacheKey += `-${presetOptions.debridioApiKey}-${presetOptions.channels}`;
+    }
+    return cacheKey;
   }
 }

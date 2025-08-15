@@ -14,6 +14,13 @@ class MediaFusionStreamParser extends StreamParser {
     if (stream.description?.includes('Content Warning')) {
       throw new Error(stream.description);
     }
+    super.raiseErrorIfNecessary(stream, currentParsedStream);
+  }
+
+  protected override shouldSkip(stream: Stream): boolean {
+    return (
+      stream.description?.includes('🚫 Streams Found\n⚙️ Filtered') ?? false
+    );
   }
 
   protected override get indexerEmojis(): string[] {
@@ -121,7 +128,7 @@ export class MediaFusionPreset extends Preset {
     const supportedServices: ServiceId[] = [
       constants.REALDEBRID_SERVICE,
       constants.PREMIUMIZE_SERVICE,
-      constants.ALLEDEBRID_SERVICE,
+      constants.ALLDEBRID_SERVICE,
       constants.TORBOX_SERVICE,
       constants.DEBRIDLINK_SERVICE,
       constants.EASYDEBRID_SERVICE,
@@ -337,8 +344,11 @@ export class MediaFusionPreset extends Preset {
       enabled: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: options.url?.endsWith('/manifest.json')
         ? {
             'User-Agent': this.METADATA.USER_AGENT,

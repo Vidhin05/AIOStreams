@@ -26,7 +26,7 @@ export const userDataMiddleware = async (
 
   // Both uuid and encryptedPassword should be present since we mounted the router on this path
   if (!uuid || !encryptedPassword) {
-    next(new APIError(constants.ErrorCode.USER_NOT_FOUND));
+    next(new APIError(constants.ErrorCode.USER_INVALID_DETAILS));
     return;
   }
   // First check - validate path has two components followed by valid resource
@@ -42,7 +42,7 @@ export const userDataMiddleware = async (
   const uuidRegex =
     /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
   if (!uuidRegex.test(uuid)) {
-    next(new APIError(constants.ErrorCode.USER_NOT_FOUND));
+    next(new APIError(constants.ErrorCode.USER_INVALID_DETAILS));
     return;
   }
 
@@ -60,7 +60,7 @@ export const userDataMiddleware = async (
         );
         return;
       }
-      next(new APIError(constants.ErrorCode.USER_NOT_FOUND));
+      next(new APIError(constants.ErrorCode.USER_INVALID_DETAILS));
       return;
     }
 
@@ -94,7 +94,7 @@ export const userDataMiddleware = async (
         );
         return;
       }
-      next(new APIError(constants.ErrorCode.USER_INVALID_PASSWORD));
+      next(new APIError(constants.ErrorCode.USER_INVALID_DETAILS));
       return;
     }
 

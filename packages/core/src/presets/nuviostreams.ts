@@ -33,12 +33,11 @@ class NuvioStreamsStreamParser extends StreamParser {
 
     parsedStream.size = this.getSize(stream, parsedStream);
 
-    parsedStream.message = stream.name
-      ?.replace(/\d+p?/gi, '')
-      ?.trim()
-      ?.replace(/-$/, '')
+    parsedStream.indexer = stream.name
+      ?.split('\n')?.[0]
+      ?.split('|')?.[0]
+      ?.split('-')?.[0]
       ?.trim();
-
     if (stream.description?.split('\n')?.[-1]?.includes('⚠️')) {
       parsedStream.message += `\n${stream.description?.split('\n')?.[-1]}`;
     }
@@ -137,6 +136,10 @@ export class NuvioStreamsPreset extends Preset {
         value: 'topmovies',
         label: 'TopMovies - Bollywood/Indian',
       },
+      {
+        value: 'animepahe',
+        label: 'AnimePahe - Anime',
+      },
     ];
 
     const options: Option[] = [
@@ -225,8 +228,11 @@ export class NuvioStreamsPreset extends Preset {
       enabled: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

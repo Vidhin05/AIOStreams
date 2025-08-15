@@ -159,7 +159,7 @@ export abstract class BaseFormatter {
       },
       addon: {
         name: stream.addon.name,
-        presetId: stream.addon.presetType,
+        presetId: stream.addon.preset.type,
         manifestUrl: stream.addon.manifestUrl,
       },
       service: {

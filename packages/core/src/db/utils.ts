@@ -50,12 +50,12 @@ function parseConnectionURI(uri: string): ConnectionURI {
         dialect,
       };
     }
+    case 'postgresql:':
     case 'postgres:': {
       driverName = 'pg';
       dialect = 'postgres';
       return {
         url,
-
         driverName,
         dialect,
       };

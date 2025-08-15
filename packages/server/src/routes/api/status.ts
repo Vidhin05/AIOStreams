@@ -13,6 +13,10 @@ const router = Router();
 
 router.get('/', async (req: Request, res: Response) => {
   const userCount = await UserRepository.getUserCount();
+  let forcedPublicProxyUrl = Env.FORCE_PROXY_PUBLIC_URL;
+  if (Env.FORCE_PUBLIC_PROXY_HOST) {
+    forcedPublicProxyUrl = `${Env.FORCE_PUBLIC_PROXY_PROTOCOL}://${Env.FORCE_PUBLIC_PROXY_HOST}:${Env.FORCE_PUBLIC_PROXY_PORT ?? ''}`;
+  }
   const info: StatusResponse = {
     version: Env.VERSION,
     tag: Env.TAG,
@@ -24,9 +28,16 @@ router.get('/', async (req: Request, res: Response) => {
       baseUrl: Env.BASE_URL,
       addonName: Env.ADDON_NAME,
       customHtml: Env.CUSTOM_HTML,
-      protected: !!Env.ADDON_PASSWORD,
+      protected: Env.ADDON_PASSWORD.length > 0,
       tmdbApiAvailable: !!Env.TMDB_ACCESS_TOKEN,
       regexFilterAccess: Env.REGEX_FILTER_ACCESS,
+      allowedRegexPatterns:
+        Env.ALLOWED_REGEX_PATTERNS.length > 0
+          ? {
+              patterns: Env.ALLOWED_REGEX_PATTERNS,
+              description: Env.ALLOWED_REGEX_PATTERNS_DESCRIPTION,
+            }
+          : undefined,
       loggingSensitiveInfo: Env.LOG_SENSITIVE_INFO,
       forced: {
         proxy: {
@@ -34,6 +45,9 @@ router.get('/', async (req: Request, res: Response) => {
           id: Env.FORCE_PROXY_ID ?? null,
           url: !!Env.FORCE_PROXY_URL
             ? encryptString(Env.FORCE_PROXY_URL).data
+            : null,
+          publicUrl: !!forcedPublicProxyUrl
+            ? encryptString(forcedPublicProxyUrl).data
             : null,
           publicIp: Env.FORCE_PROXY_PUBLIC_IP ?? null,
           credentials: !!Env.FORCE_PROXY_CREDENTIALS
@@ -49,6 +63,9 @@ router.get('/', async (req: Request, res: Response) => {
           id: Env.DEFAULT_PROXY_ID ?? null,
           url: !!Env.DEFAULT_PROXY_URL
             ? encryptString(Env.DEFAULT_PROXY_URL).data
+            : null,
+          publicUrl: Env.DEFAULT_PROXY_PUBLIC_URL
+            ? encryptString(Env.DEFAULT_PROXY_PUBLIC_URL).data
             : null,
           publicIp: Env.DEFAULT_PROXY_PUBLIC_IP ?? null,
           credentials: !!Env.DEFAULT_PROXY_CREDENTIALS

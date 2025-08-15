@@ -2,9 +2,7 @@ import { ParsedStream, UserData } from '../db/schemas';
 import {
   createLogger,
   FeatureControl,
-  Metadata,
   getTimeTakenSincePoint,
-  TMDBMetadata,
   constants,
 } from '../utils';
 import { TYPES } from '../utils/constants';
@@ -14,6 +12,7 @@ import { safeRegexTest } from '../utils/regex';
 import { StreamType } from '../utils/constants';
 import { StreamSelector } from '../parser/streamExpression';
 import StreamUtils from './utils';
+import { TMDBMetadata, TMDBMetadataResponse } from '../metadata/tmdb';
 
 const logger = createLogger('filterer');
 
@@ -36,6 +35,7 @@ class StreamFilterer {
     const isAnime = id.startsWith('kitsu');
     const skipReasons: Record<string, SkipReason> = {
       titleMatching: { total: 0, details: {} },
+      yearMatching: { total: 0, details: {} },
       seasonEpisodeMatching: { total: 0, details: {} },
       excludedStreamType: { total: 0, details: {} },
       requiredStreamType: { total: 0, details: {} },
@@ -61,14 +61,15 @@ class StreamFilterer {
       requiredRegex: { total: 0, details: {} },
       excludedKeywords: { total: 0, details: {} },
       requiredKeywords: { total: 0, details: {} },
-      requiredSeeders: { total: 0, details: {} },
-      excludedSeeders: { total: 0, details: {} },
+      requiredSeederRange: { total: 0, details: {} },
+      excludedSeederRange: { total: 0, details: {} },
       excludedFilterCondition: { total: 0, details: {} },
       requiredFilterCondition: { total: 0, details: {} },
       size: { total: 0, details: {} },
     };
 
     const includedReasons: Record<string, SkipReason> = {
+      passthrough: { total: 0, details: {} },
       resolution: { total: 0, details: {} },
       quality: { total: 0, details: {} },
       encode: { total: 0, details: {} },
@@ -85,17 +86,24 @@ class StreamFilterer {
     };
 
     const start = Date.now();
-    const isRegexAllowed = FeatureControl.isRegexAllowed(this.userData);
+    const isRegexAllowed = FeatureControl.isRegexAllowed(this.userData, [
+      ...(this.userData.excludedRegexPatterns ?? []),
+      ...(this.userData.requiredRegexPatterns ?? []),
+      ...(this.userData.includedRegexPatterns ?? []),
+    ]);
 
-    let requestedMetadata: Metadata | undefined;
+    let requestedMetadata: TMDBMetadataResponse | undefined;
     if (this.userData.titleMatching?.enabled && TYPES.includes(type as any)) {
       try {
-        requestedMetadata = await new TMDBMetadata(
-          this.userData.tmdbAccessToken
-        ).getMetadata(id, type as any);
+        requestedMetadata = await new TMDBMetadata({
+          accessToken: this.userData.tmdbAccessToken,
+          apiKey: this.userData.tmdbApiKey,
+        }).getMetadata(id, type as any);
         logger.info(`Fetched metadata for ${id}`, requestedMetadata);
       } catch (error) {
-        logger.error(`Error fetching titles for ${id}: ${error}`);
+        logger.warn(
+          `Error fetching titles for ${id}, title/year matching will not be performed: ${error}`
+        );
       }
     }
 
@@ -108,7 +116,6 @@ class StreamFilterer {
     };
 
     const performTitleMatch = (stream: ParsedStream) => {
-      // const titleMatchingOptions = this.userData.titleMatching;
       const titleMatchingOptions = {
         mode: 'exact',
         ...(this.userData.titleMatching ?? {}),
@@ -121,8 +128,6 @@ class StreamFilterer {
       }
 
       const streamTitle = stream.parsedFile?.title;
-      const streamYear = stream.parsedFile?.year;
-      // now check if we need to check this stream based on the addon and request type
       if (
         titleMatchingOptions.requestTypes?.length &&
         (!titleMatchingOptions.requestTypes.includes(type) ||
@@ -133,36 +138,52 @@ class StreamFilterer {
 
       if (
         titleMatchingOptions.addons?.length &&
-        !titleMatchingOptions.addons.includes(stream.addon.presetInstanceId)
+        !titleMatchingOptions.addons.includes(stream.addon.preset.id)
       ) {
         return true;
       }
 
-      if (
-        !streamTitle ||
-        (titleMatchingOptions.matchYear && !streamYear && type === 'movie')
-      ) {
+      if (!streamTitle) {
         // only filter out movies without a year as series results usually don't include a year
         return false;
       }
-      const yearMatch =
-        titleMatchingOptions.matchYear && streamYear
-          ? requestedMetadata?.year === streamYear
-          : true;
 
       if (titleMatchingOptions.mode === 'exact') {
-        return (
-          requestedMetadata?.titles.some(
-            (title) => normaliseTitle(title) === normaliseTitle(streamTitle)
-          ) && yearMatch
+        return requestedMetadata?.titles.some(
+          (title) => normaliseTitle(title) === normaliseTitle(streamTitle)
         );
       } else {
-        return (
-          requestedMetadata?.titles.some((title) =>
-            normaliseTitle(streamTitle).includes(normaliseTitle(title))
-          ) && yearMatch
+        return requestedMetadata?.titles.some((title) =>
+          normaliseTitle(streamTitle).includes(normaliseTitle(title))
         );
       }
+    };
+
+    const performYearMatch = (stream: ParsedStream) => {
+      const yearMatchingOptions = {
+        tolerance: 1,
+        ...this.userData.yearMatching,
+      };
+
+      if (!yearMatchingOptions || !yearMatchingOptions.enabled) {
+        return true;
+      }
+
+      if (!requestedMetadata || !requestedMetadata.year) {
+        return true;
+      }
+
+      const streamYear = stream.parsedFile?.year;
+      if (!streamYear && type === 'movie') {
+        // only filter out movies without a year as series results usually don't include a year
+        return false;
+      }
+      return streamYear
+        ? requestedMetadata.year === streamYear ||
+            (yearMatchingOptions.tolerance &&
+              Math.abs(Number(requestedMetadata.year) - Number(streamYear)) <=
+                yearMatchingOptions.tolerance)
+        : true;
     };
 
     const performSeasonEpisodeMatch = (stream: ParsedStream) => {
@@ -197,9 +218,7 @@ class StreamFilterer {
 
       if (
         seasonEpisodeMatchingOptions.addons?.length &&
-        !seasonEpisodeMatchingOptions.addons.includes(
-          stream.addon.presetInstanceId
-        )
+        !seasonEpisodeMatchingOptions.addons.includes(stream.addon.preset.id)
       ) {
         return true;
       }
@@ -310,7 +329,7 @@ class StreamFilterer {
       const isAddonFilteredOut =
         addonIds &&
         addonIds.length > 0 &&
-        addonIds.some((addonId) => stream.addon.presetInstanceId === addonId) &&
+        addonIds.some((addonId) => stream.addon.preset.id === addonId) &&
         stream.service?.cached === cached;
       const isServiceFilteredOut =
         serviceIds &&
@@ -384,6 +403,43 @@ class StreamFilterer {
 
     const shouldKeepStream = async (stream: ParsedStream): Promise<boolean> => {
       const file = stream.parsedFile;
+
+      if (stream.addon.resultPassthrough) {
+        includedReasons.passthrough.total++;
+        includedReasons.passthrough.details[stream.addon.name] =
+          (includedReasons.passthrough.details[stream.addon.name] || 0) + 1;
+        return true;
+      }
+
+      // Temporarily add in our fake visual tags used for sorting/filtering
+      // HDR+DV
+      if (
+        file?.visualTags?.some((tag) => tag.startsWith('HDR')) &&
+        file?.visualTags?.some((tag) => tag.startsWith('DV'))
+      ) {
+        const hdrIndex = file?.visualTags?.findIndex((tag) =>
+          tag.startsWith('HDR')
+        );
+        const dvIndex = file?.visualTags?.findIndex((tag) =>
+          tag.startsWith('DV')
+        );
+        const insertIndex = Math.min(hdrIndex, dvIndex);
+        file?.visualTags?.splice(insertIndex, 0, 'HDR+DV');
+      }
+      // DV Only
+      if (
+        file?.visualTags?.some((tag) => tag.startsWith('DV')) &&
+        !file?.visualTags?.some((tag) => tag.startsWith('HDR'))
+      ) {
+        file?.visualTags?.push('DV Only');
+      }
+      // HDR Only
+      if (
+        file?.visualTags?.some((tag) => tag.startsWith('HDR')) &&
+        !file?.visualTags?.some((tag) => tag.startsWith('DV'))
+      ) {
+        file?.visualTags?.push('HDR Only');
+      }
 
       // carry out include checks first
       if (this.userData.includedStreamTypes?.includes(stream.type)) {
@@ -674,22 +730,6 @@ class StreamFilterer {
         return false;
       }
 
-      // temporarily add HDR+DV to visual tags list if both HDR and DV are present
-      // to allow HDR+DV option in userData to work
-      if (
-        file?.visualTags?.some((tag) => tag.startsWith('HDR')) &&
-        file?.visualTags?.some((tag) => tag.startsWith('DV'))
-      ) {
-        const hdrIndex = file?.visualTags?.findIndex((tag) =>
-          tag.startsWith('HDR')
-        );
-        const dvIndex = file?.visualTags?.findIndex((tag) =>
-          tag.startsWith('DV')
-        );
-        const insertIndex = Math.min(hdrIndex, dvIndex);
-        file?.visualTags?.splice(insertIndex, 0, 'HDR+DV');
-      }
-
       if (
         this.userData.excludedVisualTags?.some((tag) =>
           (file?.visualTags.length ? file.visualTags : ['Unknown']).includes(
@@ -717,14 +757,13 @@ class StreamFilterer {
           )
         )
       ) {
-        const tag = this.userData.requiredVisualTags.find((tag) =>
-          (file?.visualTags.length ? file.visualTags : ['Unknown']).includes(
-            tag
-          )
-        );
         skipReasons.requiredVisualTag.total++;
-        skipReasons.requiredVisualTag.details[tag!] =
-          (skipReasons.requiredVisualTag.details[tag!] || 0) + 1;
+        skipReasons.requiredVisualTag.details[
+          `${this.userData.requiredVisualTags.join(', ')}`
+        ] =
+          (skipReasons.requiredVisualTag.details[
+            `${this.userData.requiredVisualTags.join(', ')}`
+          ] || 0) + 1;
         return false;
       }
 
@@ -912,6 +951,13 @@ class StreamFilterer {
           requiredSeederRange[0] &&
           (stream.torrent?.seeders ?? 0) < requiredSeederRange[0]
         ) {
+          skipReasons.requiredSeederRange.total++;
+          skipReasons.requiredSeederRange.details[
+            `Less than ${requiredSeederRange[0]}`
+          ] =
+            (skipReasons.requiredSeederRange.details[
+              `Less than ${requiredSeederRange[0]}`
+            ] || 0) + 1;
           return false;
         }
         if (
@@ -919,6 +965,13 @@ class StreamFilterer {
           requiredSeederRange[1] &&
           (stream.torrent?.seeders ?? 0) > requiredSeederRange[1]
         ) {
+          skipReasons.requiredSeederRange.total++;
+          skipReasons.requiredSeederRange.details[
+            `Greater than ${requiredSeederRange[1]}`
+          ] =
+            (skipReasons.requiredSeederRange.details[
+              `Greater than ${requiredSeederRange[1]}`
+            ] || 0) + 1;
           return false;
         }
       }
@@ -933,12 +986,26 @@ class StreamFilterer {
           excludedSeederRange[0] &&
           (stream.torrent?.seeders ?? 0) > excludedSeederRange[0]
         ) {
+          skipReasons.excludedSeederRange.total++;
+          skipReasons.excludedSeederRange.details[
+            `Less than ${excludedSeederRange[0]}`
+          ] =
+            (skipReasons.excludedSeederRange.details[
+              `Less than ${excludedSeederRange[0]}`
+            ] || 0) + 1;
           return false;
         }
         if (
           excludedSeederRange[1] &&
           (stream.torrent?.seeders ?? 0) < excludedSeederRange[1]
         ) {
+          skipReasons.excludedSeederRange.total++;
+          skipReasons.excludedSeederRange.details[
+            `Greater than ${excludedSeederRange[1]}`
+          ] =
+            (skipReasons.excludedSeederRange.details[
+              `Greater than ${excludedSeederRange[1]}`
+            ] || 0) + 1;
           return false;
         }
       }
@@ -950,6 +1017,17 @@ class StreamFilterer {
         ] =
           (skipReasons.titleMatching.details[
             `${stream.parsedFile?.title || 'Unknown Title'}${type === 'movie' ? ` - (${stream.parsedFile?.year || 'Unknown Year'})` : ''}`
+          ] || 0) + 1;
+        return false;
+      }
+
+      if (!performYearMatch(stream)) {
+        skipReasons.yearMatching.total++;
+        skipReasons.yearMatching.details[
+          `${stream.parsedFile?.title || 'Unknown Title'} - ${stream.parsedFile?.year || 'Unknown Year'}`
+        ] =
+          (skipReasons.yearMatching.details[
+            `${stream.parsedFile?.title || 'Unknown Title'} - ${stream.parsedFile?.year || 'Unknown Year'}`
           ] || 0) + 1;
         return false;
       }
@@ -1026,58 +1104,57 @@ class StreamFilterer {
 
     // Log filter summary
     const totalFiltered = streams.length - finalStreams.length;
-    if (totalFiltered > 0) {
-      const summary = [
-        '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-        `  🔍 Filter Summary`,
-        '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-        `  📊 Total Streams : ${streams.length}`,
-        `  ✔️ Kept         : ${finalStreams.length}`,
-        `  ❌ Filtered     : ${totalFiltered}`,
-      ];
 
-      // Add filter details if any streams were filtered
-      const filterDetails: string[] = [];
-      for (const [reason, stats] of Object.entries(skipReasons)) {
-        if (stats.total > 0) {
-          // Convert camelCase to Title Case with spaces
-          const formattedReason = reason
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, (str) => str.toUpperCase());
+    const summary = [
+      '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `  🔍 Filter Summary`,
+      '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+      `  📊 Total Streams : ${streams.length}`,
+      `  ✔️ Kept         : ${finalStreams.length}`,
+      `  ❌ Filtered     : ${totalFiltered}`,
+    ];
 
-          filterDetails.push(`\n  📌 ${formattedReason} (${stats.total})`);
-          for (const [detail, count] of Object.entries(stats.details)) {
-            filterDetails.push(`    • ${count}× ${detail}`);
-          }
+    // Add filter details if any streams were filtered
+    const filterDetails: string[] = [];
+    for (const [reason, stats] of Object.entries(skipReasons)) {
+      if (stats.total > 0) {
+        // Convert camelCase to Title Case with spaces
+        const formattedReason = reason
+          .replace(/([A-Z])/g, ' $1')
+          .replace(/^./, (str) => str.toUpperCase());
+
+        filterDetails.push(`\n  📌 ${formattedReason} (${stats.total})`);
+        for (const [detail, count] of Object.entries(stats.details)) {
+          filterDetails.push(`    • ${count}× ${detail}`);
         }
       }
-
-      const includedDetails: string[] = [];
-      for (const [reason, stats] of Object.entries(includedReasons)) {
-        if (stats.total > 0) {
-          const formattedReason = reason
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, (str) => str.toUpperCase());
-          includedDetails.push(`\n  📌 ${formattedReason} (${stats.total})`);
-          for (const [detail, count] of Object.entries(stats.details)) {
-            includedDetails.push(`    • ${count}× ${detail}`);
-          }
-        }
-      }
-
-      if (filterDetails.length > 0) {
-        summary.push('\n  🔎 Filter Details:');
-        summary.push(...filterDetails);
-      }
-
-      if (includedDetails.length > 0) {
-        summary.push('\n  🔎 Included Details:');
-        summary.push(...includedDetails);
-      }
-
-      summary.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      logger.info(summary.join('\n'));
     }
+
+    const includedDetails: string[] = [];
+    for (const [reason, stats] of Object.entries(includedReasons)) {
+      if (stats.total > 0) {
+        const formattedReason = reason
+          .replace(/([A-Z])/g, ' $1')
+          .replace(/^./, (str) => str.toUpperCase());
+        includedDetails.push(`\n  📌 ${formattedReason} (${stats.total})`);
+        for (const [detail, count] of Object.entries(stats.details)) {
+          includedDetails.push(`    • ${count}× ${detail}`);
+        }
+      }
+    }
+
+    if (filterDetails.length > 0) {
+      summary.push('\n  🔎 Filter Details:');
+      summary.push(...filterDetails);
+    }
+
+    if (includedDetails.length > 0) {
+      summary.push('\n  🔎 Included Details:');
+      summary.push(...includedDetails);
+    }
+
+    summary.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    logger.info(summary.join('\n'));
 
     logger.info(`Applied filters in ${getTimeTakenSincePoint(start)}`);
     return finalStreams;
@@ -1117,6 +1194,9 @@ class StreamFilterer {
         details: {},
       },
     };
+    const passthroughStreams = streams
+      .filter((stream) => stream.addon.resultPassthrough)
+      .map((stream) => stream.id);
     if (
       this.userData.excludedStreamExpressions &&
       this.userData.excludedStreamExpressions.length > 0
@@ -1133,7 +1213,11 @@ class StreamFilterer {
           );
 
           // Track these stream objects for removal
-          selectedStreams.forEach((stream) => streamsToRemove.add(stream.id));
+          selectedStreams.forEach(
+            (stream) =>
+              !passthroughStreams.includes(stream.id) &&
+              streamsToRemove.add(stream.id)
+          );
 
           // Update skip reasons for this condition (only count newly selected streams)
           if (selectedStreams.length > 0) {
@@ -1163,6 +1247,7 @@ class StreamFilterer {
     ) {
       const selector = new StreamSelector();
       const streamsToKeep = new Set<string>(); // Track actual stream objects to be removed
+      passthroughStreams.forEach((stream) => streamsToKeep.add(stream));
 
       for (const expression of this.userData.requiredStreamExpressions) {
         try {
@@ -1171,7 +1256,7 @@ class StreamFilterer {
             expression
           );
 
-          // Track these stream objects for removal
+          // Track these stream objects to keep
           selectedStreams.forEach((stream) => streamsToKeep.add(stream.id));
 
           // Update skip reasons for this condition (only count newly selected streams)
@@ -1190,7 +1275,7 @@ class StreamFilterer {
       }
 
       logger.verbose(
-        `Total streams selected by required conditions: ${streamsToKeep.size}`
+        `Total streams selected by required conditions: ${streamsToKeep.size} (including ${passthroughStreams.length} passthrough streams)`
       );
       // remove all streams that are not in the streamsToKeep set
       streams = streams.filter((stream) => streamsToKeep.has(stream.id));

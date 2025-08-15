@@ -92,6 +92,8 @@ export function UserDataProvider({ children }: { children: React.ReactNode }) {
           | 'stremthru'
           | undefined,
         url: forced.proxy.url ?? defaults.proxy?.url ?? undefined,
+        publicUrl:
+          forced.proxy.publicUrl ?? defaults.proxy?.publicUrl ?? undefined,
         publicIp:
           forced.proxy.publicIp ?? defaults.proxy?.publicIp ?? undefined,
         credentials:

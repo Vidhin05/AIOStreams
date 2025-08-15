@@ -37,6 +37,14 @@ class ArgentinaTvStreamParser extends StreamParser {
   ): string | undefined {
     return `${stream.name} - ${stream.description}`;
   }
+
+  protected getStreamType(
+    stream: Stream,
+    service: ParsedStream['service'],
+    currentParsedStream: ParsedStream
+  ): ParsedStream['type'] {
+    return constants.LIVE_STREAM_TYPE;
+  }
 }
 
 export class ArgentinaTVPreset extends Preset {
@@ -101,8 +109,12 @@ export class ArgentinaTVPreset extends Preset {
       library: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      resultPassthrough: true,
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

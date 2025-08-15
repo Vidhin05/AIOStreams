@@ -166,6 +166,52 @@ export class UserConfigAPI {
     }
   }
 
+  static async deleteUser(
+    uuid: string,
+    password: string
+  ): Promise<ApiResponse<void>> {
+    try {
+      const response = await fetch(`${this.BASE_URL}/user`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          uuid,
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: {
+            code: data.error?.code || 'UNKNOWN_ERROR',
+            message: data.error?.message || 'Failed to delete configuration',
+          },
+        };
+      }
+
+      return {
+        success: true,
+        data: data.data,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: {
+          code: 'UNKNOWN_ERROR',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to delete configuration',
+        },
+      };
+    }
+  }
+
   static async formatStream(
     stream: ParsedStream,
     formatter: FormatterType,
@@ -252,5 +298,46 @@ export class UserConfigAPI {
         },
       };
     }
+  }
+
+  static async exchangeGDriveAuthCode(code: string): Promise<
+    ApiResponse<{
+      accessToken: string;
+      refreshToken: string;
+    }>
+  > {
+    if (!code) {
+      return {
+        success: false,
+        error: {
+          code: 'BAD_REQUEST',
+          message: 'Code is required',
+        },
+      };
+    }
+    const response = await fetch(`${this.BASE_URL}/oauth/exchange/gdrive`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ code }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: {
+          code: data.error?.code || 'UNKNOWN_ERROR',
+          message: data.error?.message || 'Failed to exchange GDrive auth code',
+        },
+      };
+    }
+
+    return {
+      success: true,
+      data: data.data,
+    };
   }
 }

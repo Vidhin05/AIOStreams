@@ -67,7 +67,7 @@ export async function compileRegex(
   return await regexCache.wrap(
     (p: string, f: string) => new RegExp(p, f || undefined),
     getSimpleTextHash(`${regex}|${flags}`),
-    60,
+    30 * 24 * 60 * 60,
     regex,
     flags
   );

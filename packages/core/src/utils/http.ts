@@ -1,8 +1,16 @@
 import { Cache } from './cache';
-import { HEADERS_FOR_IP_FORWARDING } from './constants';
+import { HEADERS_FOR_IP_FORWARDING, INTERNAL_SECRET_HEADER } from './constants';
 import { Env } from './env';
 import { createLogger, maskSensitiveInfo } from './logger';
-import { fetch, ProxyAgent } from 'undici';
+import {
+  BodyInit,
+  fetch,
+  Headers,
+  HeadersInit,
+  ProxyAgent,
+  RequestInit,
+} from 'undici';
+import { socksDispatcher } from 'fetch-socks';
 
 const logger = createLogger('http');
 const urlCount = Cache.getInstance<string, number>('url-count');
@@ -25,26 +33,35 @@ export function makeUrlLogSafe(url: string) {
       return component;
     })
     .join('/')
-    .replace(/(?<![^?&])(password=[^&]+)/g, 'password=****');
+    .replace(/(?<![^?&])(password=[^&]+)/g, 'password=****')
+    .replace(/(?<![^?&])(apiKey=[^&]+)/g, 'apiKey=****');
 }
 
-export function makeRequest(
-  url: string,
-  timeout: number,
-  headers: HeadersInit = {},
-  forwardIp?: string,
-  ignoreRecursion?: boolean
-) {
+export interface RequestOptions {
+  timeout: number;
+  method?: string;
+  forwardIp?: string;
+  ignoreRecursion?: boolean;
+  headers?: HeadersInit;
+  body?: BodyInit;
+  rawOptions?: RequestInit;
+}
+
+export function makeRequest(url: string, options: RequestOptions) {
   const useProxy = shouldProxy(url);
-  headers = new Headers(headers);
-  if (forwardIp) {
+  const headers = new Headers(options.headers);
+  if (options.forwardIp) {
     for (const header of HEADERS_FOR_IP_FORWARDING) {
-      headers.set(header, forwardIp);
+      headers.set(header, options.forwardIp);
     }
   }
 
   if (headers.get('User-Agent') === 'none') {
     headers.delete('User-Agent');
+  }
+
+  if (url.startsWith(Env.INTERNAL_URL)) {
+    headers.set(INTERNAL_SECRET_HEADER, Env.INTERNAL_SECRET);
   }
 
   let domainUserAgent = domainHasUserAgent(url);
@@ -53,9 +70,12 @@ export function makeRequest(
   }
 
   // block recursive requests
-  const key = `${url}-${forwardIp}`;
-  const currentCount = urlCount.get(key, false) ?? 0;
-  if (currentCount > Env.RECURSION_THRESHOLD_LIMIT && !ignoreRecursion) {
+  const key = `${url}-${options.forwardIp}`;
+  const currentCount = urlCount.get(key) ?? 0;
+  if (
+    currentCount > Env.RECURSION_THRESHOLD_LIMIT &&
+    !options.ignoreRecursion
+  ) {
     logger.warn(
       `Detected possible recursive requests to ${url}. Current count: ${currentCount}. Blocking request.`
     );
@@ -71,16 +91,34 @@ export function makeRequest(
   logger.debug(
     `Making a ${useProxy ? 'proxied' : 'direct'} request to ${makeUrlLogSafe(
       url
-    )} with forwarded ip ${maskSensitiveInfo(forwardIp ?? 'none')} and headers ${maskSensitiveInfo(JSON.stringify(Object.fromEntries(headers)))}`
+    )} with forwarded ip ${maskSensitiveInfo(options.forwardIp ?? 'none')} and headers ${maskSensitiveInfo(JSON.stringify(Object.fromEntries(headers)))}`
   );
   let response = fetch(url, {
-    dispatcher: useProxy ? new ProxyAgent(Env.ADDON_PROXY!) : undefined,
-    method: 'GET',
+    ...options.rawOptions,
+    method: options.method,
+    body: options.body,
     headers: headers,
-    signal: AbortSignal.timeout(timeout),
+    dispatcher: useProxy ? getProxyAgent(Env.ADDON_PROXY!) : undefined,
+    signal: AbortSignal.timeout(options.timeout),
   });
 
   return response;
+}
+
+function getProxyAgent(proxyUrl: string) {
+  if (!proxyUrl) {
+    return undefined;
+  }
+  const proxyUrlObj = new URL(proxyUrl);
+  if (proxyUrlObj.protocol === 'socks5:') {
+    return socksDispatcher({
+      type: 5,
+      port: parseInt(proxyUrlObj.port),
+      host: proxyUrlObj.hostname,
+    });
+  } else {
+    return new ProxyAgent(proxyUrl);
+  }
 }
 
 function shouldProxy(url: string) {

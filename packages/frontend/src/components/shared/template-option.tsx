@@ -4,11 +4,14 @@ import { Switch } from '../ui/switch';
 import { Select } from '../ui/select';
 import { Combobox } from '../ui/combobox';
 import { Option } from '@aiostreams/core';
-import React from 'react';
+import React, { useState } from 'react';
 import MarkdownLite from './markdown-lite';
 import { Alert } from '../ui/alert';
 import { SocialIcon } from './social-icon';
 import { PasswordInput } from '../ui/password-input';
+import { Button } from '../ui/button';
+import { IconButton } from '../ui/button';
+import { ArrowLeftIcon, KeyIcon } from 'lucide-react';
 // this component, accepts an option and returns a component that renders the option.
 // string - TextInput
 // number - NumberInput
@@ -43,6 +46,7 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
     default: defaultValue,
     intent,
     socials,
+    oauth,
     emptyIsUndefined = false,
   } = option;
 
@@ -76,6 +80,12 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
             }
             required={required}
             disabled={isDisabled}
+            minLength={
+              constraints?.forceInUi !== false ? constraints?.min : undefined
+            }
+            maxLength={
+              constraints?.forceInUi !== false ? constraints?.max : undefined
+            }
           />
           {description && (
             <div className="text-xs text-[--muted] mt-1">
@@ -94,8 +104,12 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
               onChange(emptyIsUndefined ? value || undefined : value)
             }
             required={required}
-            minLength={constraints?.min}
-            maxLength={constraints?.max}
+            minLength={
+              constraints?.forceInUi !== false ? constraints?.min : undefined
+            }
+            maxLength={
+              constraints?.forceInUi !== false ? constraints?.max : undefined
+            }
             disabled={isDisabled}
           />
           {description && (
@@ -115,8 +129,20 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
               onChange(value)
             }
             required={required}
-            step={constraints?.max ? constraints?.max / 100 : 1}
+            step={
+              constraints?.max
+                ? Math.floor(constraints?.max / 100) > 0
+                  ? Math.floor(constraints?.max / 100)
+                  : 1
+                : 1
+            }
             disabled={isDisabled}
+            min={
+              constraints?.forceInUi !== false ? constraints?.min : undefined
+            }
+            max={
+              constraints?.forceInUi !== false ? constraints?.max : undefined
+            }
           />
           {description && (
             <div className="text-xs text-[--muted] mt-1">
@@ -184,6 +210,9 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
             emptyMessage="No options"
             disabled={isDisabled}
             required={required}
+            maxItems={
+              constraints?.forceInUi !== false ? constraints?.max : undefined
+            }
           />
           {description && (
             <div className="text-xs text-[--muted] mt-1">
@@ -204,6 +233,12 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
             required={required}
             type="url"
             disabled={isDisabled}
+            minLength={
+              constraints?.forceInUi !== false ? constraints?.min : undefined
+            }
+            maxLength={
+              constraints?.forceInUi !== false ? constraints?.max : undefined
+            }
           />
           {description && (
             <div className="text-xs text-[--muted] mt-1">
@@ -212,6 +247,71 @@ const TemplateOption: React.FC<TemplateOptionProps> = ({
           )}
         </div>
       );
+    case 'oauth': {
+      const [showInput, setShowInput] = useState(!!value);
+
+      if (!showInput) {
+        return (
+          <div>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-3 bg-[--subtle] p-4 rounded-lg">
+                <div className="flex-1">
+                  <h4 className="font-medium mb-1">{name}</h4>
+                  <p className="text-sm text-[--muted]">
+                    <MarkdownLite>{description}</MarkdownLite>
+                  </p>
+                </div>
+                <IconButton
+                  icon={<KeyIcon />}
+                  intent="primary-outline"
+                  onClick={() => {
+                    window.open(oauth?.authorisationUrl || '', '_blank');
+                    setShowInput(true);
+                  }}
+                  className="shrink-0"
+                />
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          <div className="flex flex-col gap-3">
+            <div className="bg-[--subtle] p-4 rounded-lg">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-medium">
+                  Enter {oauth?.oauthResultField?.name || 'Authorization Code'}
+                </h4>
+                <IconButton
+                  icon={<ArrowLeftIcon className="w-4 h-4" />}
+                  intent="primary-subtle"
+                  size="sm"
+                  onClick={() => setShowInput(false)}
+                  aria-label="Go back to authorization"
+                />
+              </div>
+              <PasswordInput
+                value={value}
+                onValueChange={(value: string) =>
+                  onChange(emptyIsUndefined ? value || undefined : value)
+                }
+                required={required}
+                disabled={isDisabled}
+              />
+              {oauth?.oauthResultField?.description && (
+                <div className="text-sm text-[--muted] mt-2">
+                  <MarkdownLite>
+                    {oauth.oauthResultField.description}
+                  </MarkdownLite>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
     default:
       return null;
   }

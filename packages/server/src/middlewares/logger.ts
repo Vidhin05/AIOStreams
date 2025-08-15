@@ -42,7 +42,7 @@ export const loggerMiddleware = (
       ip: req.userIp ? maskSensitiveInfo(req.userIp) : undefined,
       contentType: res.get('content-type'),
       contentLength: res.get('content-length'),
-      formatted: `${req.method} ${makeUrlLogSafe(req.originalUrl)}${req.userIp ? ` - ${maskSensitiveInfo(req.userIp)}` : ''} - Response: ${res.statusCode} - ${duration}ms`,
+      formatted: `${req.method} ${makeUrlLogSafe(req.originalUrl)}${req.userIp ? ` - ${maskSensitiveInfo(req.userIp)}` : ''} - Response: ${res.statusCode} - ${duration}`,
     });
   });
 

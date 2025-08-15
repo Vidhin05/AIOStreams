@@ -1,6 +1,6 @@
 import { PARSE_REGEX } from './regex';
-import * as PTT from 'parse-torrent-title';
 import { ParsedFile } from '../db';
+import ptt from './ptt';
 
 function matchPattern(
   filename: string,
@@ -22,7 +22,13 @@ function matchMultiplePatterns(
 
 class FileParser {
   static parse(filename: string): ParsedFile {
-    const parsed = PTT.parse(filename);
+    const parsed = ptt.parse(filename);
+    if (
+      ['vinland'].includes(parsed.title?.toLowerCase() || '') &&
+      parsed.complete
+    ) {
+      parsed.title += ' Saga';
+    }
     // prevent the title from being parsed for info
     if (parsed.title && parsed.title.length > 4) {
       filename = filename.replace(parsed.title, '').trim();

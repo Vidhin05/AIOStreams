@@ -74,7 +74,12 @@ export function MenuProvider({ children }: { children: React.ReactNode }) {
   // Update URL when menu changes
   useEffect(() => {
     const url = new URL(window.location.href);
-    url.searchParams.set('menu', selectedMenu);
+    // if menu is not about, add it to the url
+    if (selectedMenu !== 'about') {
+      url.searchParams.set('menu', selectedMenu);
+    } else {
+      url.searchParams.delete('menu');
+    }
     window.history.replaceState({}, '', url.toString());
   }, [selectedMenu]);
 

@@ -117,6 +117,9 @@
 
     --media-card-popup-background: theme('colors.gray.950');
     --hover-from-background-color: theme('colors.gray.900');
+
+    --media-accent-color: theme('colors.brand.400');
+    --media-menu-item-hover-background: rgba(255, 255, 255, 0.1);
   }
 
   .dark,
@@ -322,6 +325,8 @@ pre {
 
 /* Hide scrollbar for IE, Edge and Firefox */
 .hide-scrollbar {
-  -ms-overflow-style: none; /* IE and Edge */
-  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+  /* Firefox */
 }

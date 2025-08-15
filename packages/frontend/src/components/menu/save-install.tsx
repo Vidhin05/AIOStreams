@@ -22,6 +22,11 @@ import {
   AccordionTrigger,
 } from '../ui/accordion';
 import { PasswordInput } from '../ui/password-input';
+import { useMenu } from '@/context/menu';
+import {
+  ConfirmationDialog,
+  useConfirmationDialog,
+} from '../shared/confirmation-dialog';
 
 export function SaveInstallMenu() {
   return (
@@ -56,7 +61,20 @@ function Content() {
   const passwordModal = useDisclosure(false);
   const [filterCredentialsInExport, setFilterCredentialsInExport] =
     React.useState(false);
-
+  const deleteModal = useDisclosure(false);
+  const [deletePassword, setDeletePassword] = React.useState('');
+  const { setSelectedMenu, firstMenu } = useMenu();
+  const confirmDelete = useConfirmationDialog({
+    title: 'Confirm Deletion',
+    description:
+      'Are you sure you want to delete your configuration? This will permanently remove all your data. This action cannot be undone.',
+    actionText: 'Delete',
+    actionIntent: 'alert',
+    onConfirm: () => {
+      setLoading(true);
+      handleDelete();
+    },
+  });
   React.useEffect(() => {
     const requirements: string[] = [];
 
@@ -98,7 +116,7 @@ function Content() {
         : await UserConfigAPI.createConfig(userData, newPassword);
 
       if (!result.success) {
-        if (result.error?.code === 'USER_INVALID_PASSWORD') {
+        if (result.error?.code === 'USER_INVALID_DETAILS') {
           toast.error('Your addon password is incorrect');
           setUserData((prev) => ({
             ...prev,
@@ -168,6 +186,7 @@ function Content() {
       const dataStr = JSON.stringify(
         {
           ...userData,
+          ip: filterCredentialsInExport ? undefined : userData.ip,
           uuid: filterCredentialsInExport ? undefined : userData.uuid,
           tmdbAccessToken: filterCredentialsInExport
             ? undefined
@@ -188,6 +207,9 @@ function Content() {
               ? undefined
               : userData?.proxy?.credentials,
             url: filterCredentialsInExport ? undefined : userData?.proxy?.url,
+            publicUrl: filterCredentialsInExport
+              ? undefined
+              : userData?.proxy?.publicUrl,
           },
           presets: userData?.presets?.map((preset) => {
             const presetMeta = status?.settings.presets.find(
@@ -240,6 +262,43 @@ function Content() {
       toast.success('Manifest URL copied to clipboard');
     } catch (err) {
       toast.error('Failed to copy manifest URL');
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      if (!uuid) {
+        toast.error('No UUID found');
+        return;
+      }
+
+      const result = await UserConfigAPI.deleteUser(uuid, deletePassword);
+
+      if (!result.success) {
+        if (result.error?.code === 'USER_INVALID_DETAILS') {
+          toast.error('Invalid password');
+        } else {
+          toast.error(
+            result.error?.message || 'Failed to delete configuration'
+          );
+        }
+        return;
+      }
+
+      // Only clear data after successful deletion
+      toast.success('Configuration deleted successfully');
+      setUuid(null);
+      setEncryptedPassword(null);
+      setPassword(null);
+      setUserData(null);
+      setSelectedMenu(firstMenu);
+      deleteModal.close();
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to delete configuration'
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -419,7 +478,7 @@ function Content() {
           open={passwordModal.isOpen}
           onOpenChange={passwordModal.toggle}
           title="Addon Password"
-          description="Enter the password for this instance"
+          description="This instance is protected with a password. You must enter the password for this instance (NOT your user password you set earlier) to create a configuration here."
         >
           <form
             onSubmit={(e) => {
@@ -501,6 +560,71 @@ function Content() {
             </Accordion>
           </div>
         </SettingsCard>
+
+        {uuid && (
+          <SettingsCard
+            title="Delete Configuration"
+            description="Delete your configuration and all associated data"
+          >
+            <Button intent="alert" rounded onClick={deleteModal.open}>
+              Delete
+            </Button>
+          </SettingsCard>
+        )}
+
+        <Modal
+          open={deleteModal.isOpen}
+          onOpenChange={deleteModal.toggle}
+          title="Delete Configuration"
+          description={
+            <Alert
+              intent="warning"
+              description="Please enter your password to confirm deletion of your user and all associated data. This action cannot be undone."
+            />
+          }
+        >
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!deletePassword) {
+                toast.error('Please enter your password');
+                return;
+              }
+              confirmDelete.open();
+            }}
+          >
+            <div className="space-y-4">
+              <PasswordInput
+                label="Password"
+                value={deletePassword}
+                required
+                placeholder="Enter your password to confirm deletion"
+                onValueChange={(value) => setDeletePassword(value)}
+              />
+              <div className="pt-2">
+                <div className="grid grid-cols-2 gap-3 w-full">
+                  <Button
+                    type="button"
+                    intent="gray-outline"
+                    onClick={deleteModal.close}
+                    className="w-full"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    intent="alert"
+                    loading={loading}
+                    className="w-full"
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </form>
+        </Modal>
+        <ConfirmationDialog {...confirmDelete} />
       </div>
     </>
   );

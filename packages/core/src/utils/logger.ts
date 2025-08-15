@@ -36,6 +36,9 @@ const moduleMap: { [key: string]: string } = {
   sorter: '📊  SORTER',
   proxifier: '🔀  PROXIFIER',
   fetcher: '🔎  SCRAPER',
+  gdrive: '☁️  GDRIVE',
+  'torbox-search': '🔍  TORBOX SEARCH',
+  debrid: '🔗  DEBRID',
 };
 
 // Define colors for each log level using full names

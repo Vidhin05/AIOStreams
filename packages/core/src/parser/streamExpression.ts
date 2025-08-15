@@ -508,7 +508,7 @@ export abstract class StreamExpressionEngine {
     this.parser.functions.slice = function (
       streams: ParsedStream[],
       start: number,
-      end: number
+      end?: number
     ) {
       if (!Array.isArray(streams)) {
         throw new Error('Your streams input must be an array of streams');
@@ -541,9 +541,11 @@ export abstract class StreamExpressionEngine {
       id: '1',
       type: 'http',
       addon: {
-        instanceId: 'test-instance',
-        presetType: 'test-preset',
-        presetInstanceId: 'test-preset-instance',
+        preset: {
+          type: 'test-preset',
+          id: 'test-preset',
+          options: {},
+        },
         manifestUrl: 'https://example.com/manifest.json',
         enabled: true,
         name: 'Test Addon',

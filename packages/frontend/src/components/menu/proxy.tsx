@@ -75,6 +75,7 @@ function Content() {
   const isForced = status?.settings.forced.proxy;
   const isProxyForced = isForced?.enabled !== null;
   const isUrlForced = isForced?.url !== null;
+  const isPublicUrlForced = isForced?.publicUrl !== null;
   const isIdForced = isForced?.id !== null;
   const isPublicIpForced = isForced?.publicIp !== null;
   const isCredentialsForced = isForced?.credentials !== null;
@@ -152,6 +153,38 @@ function Content() {
             />
             <p className="text-[--muted] text-sm">
               The URL of your hosted proxy service.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <PasswordInput
+              label="Public URL (optional)"
+              value={userData.proxy?.publicUrl ?? ''}
+              onValueChange={(v) => {
+                setUserData((prev) => ({
+                  ...prev,
+                  proxy: { ...prev.proxy, publicUrl: v },
+                }));
+              }}
+              placeholder="Enter proxy public URL"
+              disabled={isPublicUrlForced || !userData.proxy?.enabled}
+            />
+            <p className="text-[--muted] text-sm">
+              The public URL of your hosted proxy service. Provide this only if
+              you want to use a local URL for requests but a publicly accessible
+              URL is needed for streams. e.g. setting http://
+              {userData.proxy?.id
+                ? userData.proxy.id === 'stremthru'
+                  ? 'stremthru:8080'
+                  : 'mediaflow-proxy:8888'
+                : 'mediaflow-proxy:8888'}
+              as the URL above but then using https://
+              {userData.proxy?.id
+                ? userData.proxy.id === 'stremthru'
+                  ? 'stremthru.yourdomain.com'
+                  : 'mediaflow-proxy.yourdomain.com'
+                : 'mediaflow-proxy.yourdomain.com'}
+              as the public URL.
             </p>
           </div>
 

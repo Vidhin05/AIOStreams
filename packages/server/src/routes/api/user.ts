@@ -42,7 +42,7 @@ router.head('/', async (req, res, next) => {
         })
       );
     } else {
-      next(new APIError(constants.ErrorCode.USER_NOT_FOUND));
+      next(new APIError(constants.ErrorCode.USER_INVALID_DETAILS));
     }
   } catch (error) {
     if (error instanceof APIError) {
@@ -73,7 +73,9 @@ router.get('/', async (req, res, next) => {
     if (error instanceof APIError) {
       next(error);
     } else {
-      next(new APIError(constants.ErrorCode.USER_ERROR));
+      next(
+        new APIError(constants.ErrorCode.USER_ERROR, undefined, error.message)
+      );
     }
     return;
   }
@@ -173,4 +175,27 @@ router.post('/', async (req, res, next) => {
   }
 });
 
+router.delete('/', async (req, res, next) => {
+  const { uuid, password } = req.body;
+  if (!uuid || !password) {
+    next(new APIError(constants.ErrorCode.MISSING_REQUIRED_FIELDS));
+    return;
+  }
+  try {
+    await UserRepository.deleteUser(uuid, password);
+    res.status(200).json(
+      createResponse({
+        success: true,
+        detail: 'User deleted successfully',
+      })
+    );
+  } catch (error) {
+    logger.error(error);
+    if (error instanceof APIError) {
+      next(error);
+    } else {
+      next(new APIError(constants.ErrorCode.USER_ERROR));
+    }
+  }
+});
 export default router;

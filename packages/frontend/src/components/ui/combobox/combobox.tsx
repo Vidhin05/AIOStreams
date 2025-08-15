@@ -136,6 +136,10 @@ export type ComboboxProps = Omit<
      * Close the popover when an item is selected
      */
     keepOpenOnSelect?: boolean;
+    /**
+     * Maximum items
+     */
+    maxItems?: number;
   };
 
 export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
@@ -163,7 +167,7 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
         removeItemButtonClass,
         /**/
         commandProps,
-        options,
+        options: rawOptions,
         emptyMessage,
         placeholder,
         value: controlledValue,
@@ -173,6 +177,7 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
         defaultValue,
         inputRef,
         keepOpenOnSelect = true,
+        maxItems,
         ...rest
       },
       {
@@ -221,9 +226,31 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
       onValueChange?.(value);
     }, [value]);
 
+    const counts: Record<string, number> = {};
+    const options = rawOptions.map((option) => {
+      const textValue = (option.textValue || option.value)?.trim() || 'Unnamed';
+      const label =
+        typeof option.label === 'string'
+          ? option.label?.trim() || 'Unnamed'
+          : option.label;
+      counts[textValue] = (counts[textValue] || 0) + 1;
+      return {
+        ...option,
+        label:
+          counts[textValue] > 1 ? `${label} (${counts[textValue]})` : label,
+        textValue:
+          counts[textValue] > 1
+            ? `${textValue} (${counts[textValue]})`
+            : textValue,
+      };
+    });
+
     const selectedOptions = options.filter((option) =>
       value.includes(option.value)
     );
+
+    const maxReached =
+      multiple && typeof maxItems === 'number' && value.length >= maxItems;
 
     const selectedValues =
       !!value.length && !!selectedOptions.length ? (
@@ -358,55 +385,64 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
               <CommandList>
                 <CommandEmpty>{emptyMessage}</CommandEmpty>
                 <CommandGroup>
-                  {options.map((option) => (
-                    <CommandItem
-                      key={option.value}
-                      value={option.textValue || option.value}
-                      onSelect={(currentValue: string) => {
-                        const _option = options.find(
-                          (n) =>
-                            (n.textValue || n.value).toLowerCase() ===
-                            currentValue.toLowerCase()
-                        );
-                        if (_option) {
-                          if (!multiple) {
-                            handleUpdateValue(
-                              value.includes(_option.value)
-                                ? []
-                                : [_option.value]
-                            );
-                          } else {
-                            handleUpdateValue(
-                              !value.includes(_option.value)
-                                ? [...value, _option.value]
-                                : value.filter((v) => v !== _option.value)
-                            );
+                  {options.map((option) => {
+                    const isDisabled =
+                      maxReached && !value.includes(option.value);
+                    return (
+                      <CommandItem
+                        key={option.value}
+                        value={option.textValue || option.value}
+                        disabled={isDisabled}
+                        className={cn(
+                          isDisabled &&
+                            'opacity-50 cursor-not-allowed pointer-events-none'
+                        )}
+                        onSelect={(currentValue: string) => {
+                          const _option = options.find(
+                            (n) =>
+                              (n.textValue || n.value).toLowerCase() ===
+                              currentValue.toLowerCase()
+                          );
+                          if (_option) {
+                            if (!multiple) {
+                              handleUpdateValue(
+                                value.includes(_option.value)
+                                  ? []
+                                  : [_option.value]
+                              );
+                            } else {
+                              handleUpdateValue(
+                                !value.includes(_option.value)
+                                  ? [...value, _option.value]
+                                  : value.filter((v) => v !== _option.value)
+                              );
+                            }
                           }
+                          setOpen(keepOpenOnSelect);
+                        }}
+                        leftIcon={
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className={cn(
+                              ComboboxAnatomy.checkIcon(),
+                              checkIconClass
+                            )}
+                            data-selected={value.includes(option.value)}
+                          >
+                            <path d="M20 6 9 17l-5-5" />
+                          </svg>
                         }
-                        setOpen(keepOpenOnSelect);
-                      }}
-                      leftIcon={
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className={cn(
-                            ComboboxAnatomy.checkIcon(),
-                            checkIconClass
-                          )}
-                          data-selected={value.includes(option.value)}
-                        >
-                          <path d="M20 6 9 17l-5-5" />
-                        </svg>
-                      }
-                    >
-                      {option.label}
-                    </CommandItem>
-                  ))}
+                      >
+                        {option.label}
+                      </CommandItem>
+                    );
+                  })}
                 </CommandGroup>
               </CommandList>
             </Command>

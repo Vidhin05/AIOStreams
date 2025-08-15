@@ -23,7 +23,7 @@
     <a href="https://hub.docker.com/r/viren070/aiostreams">
         <img src="https://img.shields.io/docker/pulls/viren070/aiostreams?style=for-the-badge&logo=docker" alt="Docker Pulls">
     </a>
-    <a href="https://discord.gg/aiostreams">
+    <a href="https://discord.viren070.me">
         <img src="https://img.shields.io/badge/Discord-Join_Chat-7289DA?logo=discord&logoColor=white&style=for-the-badge" alt="Discord Server">
     </a>
 </p>

@@ -34,7 +34,7 @@ import { useMenu } from '@/context/menu';
 import { PageControls } from '../shared/page-controls';
 import { SettingsCard } from '../shared/settings-card';
 import { TextInput } from '../ui/text-input';
-
+import { PasswordInput } from '../ui/password-input';
 export function ServicesMenu() {
   return (
     <>
@@ -298,9 +298,8 @@ function Content() {
         title="RPDB"
         description="Provide your RPDB API key if you want catalogs of supported types to use posters from RPDB"
       >
-        <TextInput
+        <PasswordInput
           label="RPDB API Key"
-          // help="Get your API Key from "
           help={
             <span>
               Get your API Key from{' '}
@@ -322,7 +321,99 @@ function Content() {
             }));
           }}
         />
+
+        <Switch
+          label="Use Redirect API"
+          side="right"
+          disabled={!userData.rpdbApiKey || !status.settings.baseUrl}
+          help={
+            <span>
+              If enabled, poster URLs will first contact AIOStreams and then be
+              redirected to RPDB. This allows fallback posters to be used if the
+              RPDB API is down or does not have a poster for that item. It can
+              however cause a minimal slowdown due to having to contact
+              AIOStreams first. This setting requires the <code>BASE_URL</code>{' '}
+              environment variable to be set.
+            </span>
+          }
+          value={
+            userData.rpdbUseRedirectApi !== undefined
+              ? userData.rpdbUseRedirectApi
+              : !!status.settings.baseUrl
+          }
+          onValueChange={(v) => {
+            setUserData((prev) => ({
+              ...prev,
+              rpdbUseRedirectApi: v,
+            }));
+          }}
+        />
       </SettingsCard>
+
+      <SettingsCard
+        title="TMDB"
+        description={`Optionally provide your TMDB API Key and Read Access Token here. AIOStreams only needs one of them for title matching and its recommended and precaching to be able to
+           determine when to move to the next season. Some addons in the marketplace will require one or the other too.`}
+      >
+        <PasswordInput
+          label="TMDB Read Access Token"
+          help={
+            <>
+              <p>
+                You can get it from your{' '}
+                <a
+                  href="https://www.themoviedb.org/settings/api"
+                  target="_blank"
+                  className="text-[--brand] hover:underline"
+                  rel="noopener noreferrer"
+                >
+                  TMDB Account Settings.{' '}
+                </a>
+                Make sure to copy the Read Access Token and not the 32 character
+                API Key.
+              </p>
+              <p></p>
+            </>
+          }
+          required={!status?.settings.tmdbApiAvailable}
+          value={userData.tmdbAccessToken}
+          placeholder="Enter your TMDB access token"
+          onValueChange={(value) => {
+            setUserData((prev) => ({
+              ...prev,
+              tmdbAccessToken: value,
+            }));
+          }}
+        />
+
+        <PasswordInput
+          label="TMDB API Key"
+          help={
+            <span>
+              You can get it from your{' '}
+              <a
+                href="https://www.themoviedb.org/settings/api"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[--brand] hover:underline"
+              >
+                TMDB Account Settings.{' '}
+              </a>
+              Make sure to copy the 32 character API Key and not the Read Access
+              Token.
+            </span>
+          }
+          placeholder="Enter your TMDB API Key"
+          value={userData.tmdbApiKey}
+          onValueChange={(value) => {
+            setUserData((prev) => ({
+              ...prev,
+              tmdbApiKey: value,
+            }));
+          }}
+        />
+      </SettingsCard>
+
       <ServiceModal
         open={modalOpen}
         onOpenChange={setModalOpen}

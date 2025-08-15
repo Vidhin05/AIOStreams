@@ -34,9 +34,12 @@ export class UserRepository {
         );
       }
       let validatedConfig: UserData;
-      if (Env.ADDON_PASSWORD && config.addonPassword !== Env.ADDON_PASSWORD) {
+      if (
+        Env.ADDON_PASSWORD.length > 0 &&
+        !Env.ADDON_PASSWORD.includes(config.addonPassword || '')
+      ) {
         return Promise.reject(
-          new APIError(constants.ErrorCode.USER_INVALID_PASSWORD)
+          new APIError(constants.ErrorCode.USER_INVALID_DETAILS)
         );
       }
       config.trusted = false;
@@ -124,7 +127,9 @@ export class UserRepository {
       );
 
       if (!result.length || !result[0].config) {
-        return Promise.reject(new APIError(constants.ErrorCode.USER_NOT_FOUND));
+        return Promise.reject(
+          new APIError(constants.ErrorCode.USER_INVALID_DETAILS)
+        );
       }
 
       await db.execute(
@@ -138,7 +143,7 @@ export class UserRepository {
       );
       if (!isValid) {
         return Promise.reject(
-          new APIError(constants.ErrorCode.USER_INVALID_PASSWORD)
+          new APIError(constants.ErrorCode.USER_INVALID_DETAILS)
         );
       }
 
@@ -206,16 +211,22 @@ export class UserRepository {
         );
 
         if (!currentUser.rows.length) {
-          throw new APIError(constants.ErrorCode.USER_NOT_FOUND);
+          throw new APIError(constants.ErrorCode.USER_INVALID_DETAILS);
         }
 
-        if (Env.ADDON_PASSWORD && config.addonPassword !== Env.ADDON_PASSWORD) {
+        if (
+          Env.ADDON_PASSWORD.length > 0 &&
+          !Env.ADDON_PASSWORD.includes(config.addonPassword || '')
+        ) {
           throw new APIError(
-            constants.ErrorCode.USER_INVALID_PASSWORD,
+            constants.ErrorCode.USER_INVALID_DETAILS,
             undefined,
             'Invalid password'
           );
         }
+        config.trusted =
+          Env.TRUSTED_UUIDS?.split(',').some((u) => new RegExp(u).test(uuid)) ??
+          false;
         let validatedConfig: UserData;
         try {
           validatedConfig = await validateConfig(config, false, false);
@@ -229,7 +240,7 @@ export class UserRepository {
         const storedHash = currentUser.rows[0].password_hash;
         const isValid = await this.verifyUserPassword(password, storedHash);
         if (!isValid) {
-          throw new APIError(constants.ErrorCode.USER_INVALID_PASSWORD);
+          throw new APIError(constants.ErrorCode.USER_INVALID_DETAILS);
         }
         const { encryptedConfig } = await this.encryptConfig(
           validatedConfig,
@@ -269,19 +280,28 @@ export class UserRepository {
     }
   }
 
-  static async deleteUser(uuid: string): Promise<void> {
+  static async deleteUser(uuid: string, password: string): Promise<void> {
     return txQueue.enqueue(async () => {
       let tx;
       let committed = false;
       try {
         tx = await db.begin();
-        const result = await tx.execute('DELETE FROM users WHERE uuid = ?', [
-          uuid,
-        ]);
-
-        if (result.rowCount === 0) {
-          throw new APIError(constants.ErrorCode.USER_NOT_FOUND);
+        const result = await tx.execute(
+          'SELECT password_hash FROM users WHERE uuid = ?',
+          [uuid]
+        );
+        if (!result.rowCount) {
+          throw new APIError(constants.ErrorCode.USER_INVALID_DETAILS);
         }
+        const isValid = await this.verifyUserPassword(
+          password,
+          result.rows[0].password_hash
+        );
+        if (!isValid) {
+          throw new APIError(constants.ErrorCode.USER_INVALID_DETAILS);
+        }
+
+        await tx.execute('DELETE FROM users WHERE uuid = ?', [uuid]);
 
         await tx.commit();
         committed = true;

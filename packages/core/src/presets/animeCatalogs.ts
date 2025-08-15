@@ -1,5 +1,5 @@
 import { Addon, Option, UserData } from '../db';
-import { Preset, baseOptions } from './preset';
+import { CacheKeyRequestOptions, Preset, baseOptions } from './preset';
 import { constants, Env } from '../utils';
 
 export class AnimeCatalogsPreset extends Preset {
@@ -249,12 +249,8 @@ export class AnimeCatalogsPreset extends Preset {
     return [this.generateAddon(userData, options)];
   }
 
-  private static generateAddon(
-    userData: UserData,
-    options: Record<string, any>
-  ): Addon {
-    // generate a joint list of all catalogs
-    const enabledCatalogs = [
+  private static getCatalogList(options: Record<string, any>) {
+    return [
       ...(options.mal_catalogs || []),
       ...(options.anidb_catalogs || []),
       ...(options.anilist_catalogs || []),
@@ -263,7 +259,13 @@ export class AnimeCatalogsPreset extends Preset {
       ...(options.livechart_catalogs || []),
       ...(options.notifymoe_catalogs || []),
     ];
-    // {"dubbed":"on","cinemeta":"on","search":"on","myanimelist_top-all-time":"on","myanimelist_top-airing":"on","myanimelist_top-series":"on","myanimelist_top-movies":"on","myanimelist_popular":"on","myanimelist_most-favorited":"on","anidb_popular":"on","anidb_latest-started":"on","anidb_latest-ended":"on","anidb_best-of-10s":"on","anidb_best-of-00s":"on","anidb_best-of-90s":"on","anidb_best-of-80s":"on","anilist_trending-now":"on","anilist_popular-this-season":"on","anilist_upcoming-next-season":"on","anilist_all-time-popular":"on","anilist_top-anime":"on","kitsu_top-airing":"on","kitsu_most-popular":"on","kitsu_highest-rated":"on","kitsu_newest":"on","anisearch_top-all-time":"on","anisearch_trending":"on","anisearch_popular":"on","livechart_popular":"on","livechart_top-rated":"on","notifymoe_airing-now":"on"}
+  }
+
+  private static generateAddon(
+    userData: UserData,
+    options: Record<string, any>
+  ): Addon {
+    const enabledCatalogs = this.getCatalogList(options);
     const config = this.urlEncodeJSON({
       dubbed: options.dubbed ? 'on' : undefined,
       cinemeta: options.cinemeta ? 'on' : undefined,
@@ -281,11 +283,39 @@ export class AnimeCatalogsPreset extends Preset {
       library: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
     };
+  }
+
+  static override getCacheKey(
+    options: CacheKeyRequestOptions
+  ): string | undefined {
+    const { resource, type, id, options: presetOptions, extras } = options;
+    try {
+      if (new URL(presetOptions.url).pathname.endsWith('/manifest.json')) {
+        return undefined;
+      }
+      if (new URL(presetOptions.url).origin !== this.METADATA.URL) {
+        return undefined;
+      }
+    } catch {}
+    let cacheKey = `${this.METADATA.ID}-${type}-${id}-${extras}`;
+    if (resource === constants.CATALOG_RESOURCE) {
+      cacheKey += `-${presetOptions.dubbed}-${presetOptions.cinemeta}`;
+    }
+    if (resource === 'manifest') {
+      const catalogList = this.getCatalogList(presetOptions).sort((a, b) =>
+        a.localeCompare(b)
+      );
+      cacheKey += `-${catalogList}`;
+    }
+    return cacheKey;
   }
 }

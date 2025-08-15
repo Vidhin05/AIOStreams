@@ -34,7 +34,7 @@ class WebStreamrStreamParser extends StreamParser {
     stream: Stream,
     currentParsedStream: ParsedStream
   ): string | undefined {
-    const messageRegex = this.getRegexForTextAfterEmojis(['🐢']);
+    const messageRegex = this.getRegexForTextAfterEmojis(['🐢', '🚦', '⚠️', '⏳', '❌']);
 
     let messages = [stream.description?.match(messageRegex)?.[1]];
     if (stream.name?.includes('external')) {
@@ -49,11 +49,8 @@ class WebStreamrStreamParser extends StreamParser {
   ): string | undefined {
     let filename = undefined;
     const resolution = stream.name?.match(/\d+p?/i)?.[0];
-    if (stream.description?.split('\n')?.[0]?.includes('📂')) {
-      filename = stream.description
-        ?.split('\n')?.[0]
-        ?.replace('📂', '')
-        ?.trim();
+    if (!stream.description?.split('\n')?.[0]?.includes('🔗')) {
+      filename = stream.description?.split('\n')?.[0]?.trim();
     }
 
     const str = `${filename ? filename + ' ' : ''}${resolution ? resolution : ''}`;
@@ -71,11 +68,15 @@ export class WebStreamrPreset extends Preset {
 
     const providers = [
       {
+        label: '🌐 Multi (VixSrc)',
+        value: 'multi',
+      },
+      {
         label: '🇺🇸 English (Soaper, VidSrc)',
         value: 'en',
       },
       {
-        label: '🇩🇪 German (KinoGer, MeineCloud, StreamKiste)',
+        label: '🇩🇪 German (KinoGer, MegaKino, MeineCloud, StreamKiste)',
         value: 'de',
       },
       {
@@ -83,11 +84,11 @@ export class WebStreamrPreset extends Preset {
         value: 'es',
       },
       {
-        label: '🇫🇷 French (Frembed, FrenchCloud)',
+        label: '🇫🇷 French (Frembed, FrenchCloud, Movix)',
         value: 'fr',
       },
       {
-        label: '🇮🇹 Italian (Eurostreaming, MostraGuarda)',
+        label: '🇮🇹 Italian (VixSrc, Eurostreaming, MostraGuarda)',
         value: 'it',
       },
       {
@@ -159,8 +160,11 @@ export class WebStreamrPreset extends Preset {
       streamPassthrough: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
@@ -183,12 +187,23 @@ export class WebStreamrPreset extends Preset {
       options.includeExternalUrls ?? undefined, // ensure its removed if false
     ].filter(Boolean);
 
-    const config = this.urlEncodeJSON({
+    let config = {
       ...checkedOptions.reduce((acc, option) => {
         acc[option] = 'on';
         return acc;
       }, {}),
-    });
+    };
+
+    if (
+      userData.proxy?.enabled &&
+      userData.proxy.id === 'mediaflow' &&
+      userData.proxy.credentials
+    ) {
+      config.mediaFlowProxyUrl = userData.proxy.url;
+      config.mediaFlowProxyPassword = userData.proxy.credentials;
+    }
+
+    config = this.urlEncodeJSON(config);
 
     return `${url}${config ? '/' + config : ''}/manifest.json`;
   }

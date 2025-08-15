@@ -4,6 +4,16 @@ import { Env } from './env';
 const DEFAULT_REASON = 'Disabled by owner of the instance';
 
 export class FeatureControl {
+  private static readonly _allowedRegexPatterns: {
+    patterns: string[];
+    description?: string;
+  } = (() => {
+    return {
+      patterns: Env.ALLOWED_REGEX_PATTERNS,
+      description: Env.ALLOWED_REGEX_PATTERNS_DESCRIPTION,
+    };
+  })();
+
   private static readonly _disabledHosts: Map<string, string> = (() => {
     const map = new Map<string, string>();
     if (Env.DISABLED_HOSTS) {
@@ -52,7 +62,19 @@ export class FeatureControl {
     return this._disabledServices;
   }
 
-  public static isRegexAllowed(userData: UserData) {
+  public static get allowedRegexPatterns() {
+    return this._allowedRegexPatterns;
+  }
+
+  public static isRegexAllowed(userData: UserData, regexes?: string[]) {
+    if (regexes && regexes.length > 0) {
+      const areAllRegexesAllowed = regexes.every((regex) =>
+        this.allowedRegexPatterns.patterns.includes(regex)
+      );
+      if (areAllRegexesAllowed) {
+        return true;
+      }
+    }
     switch (this.regexFilterAccess) {
       case 'trusted':
         return userData.trusted ?? false;

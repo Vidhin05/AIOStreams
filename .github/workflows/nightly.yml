@@ -23,12 +23,43 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Generate timestamp tag
         id: gen_tag
         run: |
           TIMESTAMP=$(date '+%Y.%m.%d.%H%M-nightly')
           echo "tag_name=$TIMESTAMP" >> $GITHUB_OUTPUT
+
+      - name: Get last nightly tag
+        id: get_last_nightly_tag
+        run: |
+          LAST_NIGHTLY_TAG=$(git tag -l "*-nightly" --sort=-committerdate | head -n 1 || echo "")
+          echo "last_nightly_tag=$LAST_NIGHTLY_TAG" >> $GITHUB_OUTPUT
+          echo "Found last nightly tag: ${LAST_NIGHTLY_TAG:-none}"
+
+      - name: Get commit messages
+        id: commit_msgs
+        run: |
+          if [ -z "${{ steps.get_last_nightly_tag.outputs.last_nightly_tag }}" ]; then
+            # If no previous nightly tag exists, get the last 20 commit messages
+            echo "No previous nightly tag found. Getting recent commits."
+            COMMIT_MSGS=$(git log --pretty=format:"* %s (%h)" -n 20)
+          else
+            # Get commit messages since last nightly tag
+            echo "Getting commits since ${{ steps.get_last_nightly_tag.outputs.last_nightly_tag }}"
+            COMMIT_MSGS=$(git log "${{ steps.get_last_nightly_tag.outputs.last_nightly_tag }}"..HEAD --pretty=format:"* %s (%h)")
+          fi
+
+          # If no commits found, provide a default message
+          if [ -z "$COMMIT_MSGS" ]; then
+            COMMIT_MSGS="No new commits since last nightly build"
+          fi
+
+          echo "commit_msgs<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create git tag
         env:
@@ -39,22 +70,24 @@ jobs:
           git tag $TAG_NAME
           git push origin $TAG_NAME
 
-      - name: Get commit message
-        id: commit_msg
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "commit_msg<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Create GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.gen_tag.outputs.tag_name }}
+          LAST_NIGHTLY_TAG: ${{ steps.get_last_nightly_tag.outputs.last_nightly_tag }}
+          COMMIT_MSGS: ${{ steps.commit_msgs.outputs.commit_msgs }}
         run: |
-          gh release create "${{ steps.gen_tag.outputs.tag_name }}" \
+          RELEASE_NOTES=$(cat <<EOF
+          ## $TAG_NAME
+
+          $COMMIT_MSGS
+          EOF
+          )
+
+          gh release create "$TAG_NAME" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "${{ steps.gen_tag.outputs.tag_name }}" \
-            --notes "${{ steps.commit_msg.outputs.commit_msg }}" \
+            --title "$TAG_NAME" \
+            --notes "$RELEASE_NOTES" \
             --prerelease
 
       - name: Trigger Docker Image Publish

@@ -1,4 +1,4 @@
-import { Addon, Option, UserData, Resource, Stream } from '../db';
+import { Addon, Option, UserData, Resource, Stream, ParsedStream } from '../db';
 import { baseOptions, Preset } from './preset';
 import { Env } from '../utils';
 import { constants, ServiceId } from '../utils';
@@ -32,6 +32,32 @@ class StremthruStoreStreamParser extends StreamParser {
     }
     return url;
   }
+  // ensure release groups aren't misidentified as indexers
+  protected override getIndexer(
+    stream: Stream,
+    currentParsedStream: ParsedStream
+  ): string | undefined {
+    return undefined;
+  }
+
+  protected override getFolderSize(
+    stream: Stream,
+    currentParsedStream: ParsedStream
+  ): number | undefined {
+    let folderSize = this.calculateBytesFromSizeString(
+      stream.description ?? '',
+      /📦\s*(\d+(\.\d+)?)\s?(KB|MB|GB|TB)/i
+    );
+    if (folderSize && currentParsedStream.size) {
+      if (
+        Math.abs(folderSize - currentParsedStream.size) <=
+        currentParsedStream.size * 0.05
+      ) {
+        return undefined;
+      }
+    }
+    return folderSize;
+  }
 }
 
 export class StremthruStorePreset extends Preset {
@@ -43,7 +69,7 @@ export class StremthruStorePreset extends Preset {
     const supportedServices: ServiceId[] = [
       constants.REALDEBRID_SERVICE,
       constants.PREMIUMIZE_SERVICE,
-      constants.ALLEDEBRID_SERVICE,
+      constants.ALLDEBRID_SERVICE,
       constants.TORBOX_SERVICE,
       constants.EASYDEBRID_SERVICE,
       constants.DEBRIDLINK_SERVICE,
@@ -79,8 +105,9 @@ export class StremthruStorePreset extends Preset {
       },
       {
         id: 'webDl',
-        name: 'Web DL',
-        description: 'Enable web DL',
+        name: 'Web Downloads',
+        description:
+          'Include downloads from web hosters (e.g. Mega, Zippyshare) in results',
         type: 'boolean',
       },
       {
@@ -155,8 +182,11 @@ export class StremthruStorePreset extends Preset {
       library: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

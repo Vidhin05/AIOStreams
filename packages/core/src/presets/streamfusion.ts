@@ -8,7 +8,7 @@ export class StreamFusionPreset extends Preset {
     const supportedServices: ServiceId[] = [
       constants.REALDEBRID_SERVICE,
       constants.PREMIUMIZE_SERVICE,
-      constants.ALLEDEBRID_SERVICE,
+      constants.ALLDEBRID_SERVICE,
       constants.TORBOX_SERVICE,
       constants.EASYDEBRID_SERVICE,
       constants.DEBRIDLINK_SERVICE,
@@ -173,8 +173,11 @@ export class StreamFusionPreset extends Preset {
       enabled: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
@@ -209,8 +212,8 @@ export class StreamFusionPreset extends Preset {
       RDToken: serviceIds.includes(constants.REALDEBRID_SERVICE)
         ? this.getServiceCredential(constants.REALDEBRID_SERVICE, userData)
         : '',
-      ADToken: serviceIds.includes(constants.ALLEDEBRID_SERVICE)
-        ? this.getServiceCredential(constants.ALLEDEBRID_SERVICE, userData)
+      ADToken: serviceIds.includes(constants.ALLDEBRID_SERVICE)
+        ? this.getServiceCredential(constants.ALLDEBRID_SERVICE, userData)
         : '',
       TBToken: serviceIds.includes(constants.TORBOX_SERVICE)
         ? this.getServiceCredential(constants.TORBOX_SERVICE, userData)

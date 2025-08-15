@@ -24,7 +24,7 @@ export class OrionPreset extends Preset {
     const supportedServices: ServiceId[] = [
       constants.REALDEBRID_SERVICE,
       constants.PREMIUMIZE_SERVICE,
-      constants.ALLEDEBRID_SERVICE,
+      constants.ALLDEBRID_SERVICE,
       // constants.TORBOX_SERVICE,
       constants.DEBRIDLINK_SERVICE,
       constants.OFFCLOUD_SERVICE,
@@ -128,9 +128,6 @@ export class OrionPreset extends Preset {
   ): Addon {
     return {
       name: options.name || this.METADATA.NAME,
-      // we don't want our true identifier to be change if the user changes their services
-      // meaning the addon ID changes and the user then has to reinstall the addon
-      // so instead, our internal identifier simply says either: p2p, multi, or the specific short name of the single service
       identifier:
         serviceIds.length > 0
           ? serviceIds.length > 1
@@ -147,8 +144,11 @@ export class OrionPreset extends Preset {
       enabled: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

@@ -13,17 +13,16 @@ import {
   getTimeTakenSincePoint,
   maskSensitiveInfo,
   Cache,
-  CatalogExtras,
+  ExtrasParser,
+  makeUrlLogSafe,
 } from './utils';
 import { Wrapper } from './wrapper';
 import { PresetManager } from './presets';
 import {
   AddonCatalog,
-  Extras,
-  ExtrasSchema,
-  ExtrasTypesSchema,
   Meta,
   MetaPreview,
+  ParsedMeta,
   ParsedStream,
   Subtitle,
 } from './db/schemas';
@@ -41,10 +40,11 @@ import {
   StreamUtils,
 } from './streams';
 import { getAddonName } from './utils/general';
+import { TMDBMetadata, TMDBMetadataResponse } from './metadata/tmdb';
 const logger = createLogger('core');
 
 const shuffleCache = Cache.getInstance<string, MetaPreview[]>('shuffle');
-const precacheCache = Cache.getInstance<string, ParsedStream[]>('precache');
+const precacheCache = Cache.getInstance<string, boolean>('precache');
 
 export interface AIOStreamsError {
   title?: string;
@@ -59,6 +59,7 @@ export interface AIOStreamsResponse<T> {
 
 export class AIOStreams {
   private userData: UserData;
+  private manifestUrl: string;
   private manifests: Record<string, Manifest | null>;
   private supportedResources: Record<string, StrictManifestResource[]>;
   private finalResources: StrictManifestResource[] = [];
@@ -83,6 +84,7 @@ export class AIOStreams {
   constructor(userData: UserData, skipFailedAddons: boolean = true) {
     this.addonInitialisationErrors = [];
     this.userData = userData;
+    this.manifestUrl = `${Env.BASE_URL}/stremio/${this.userData.uuid}/${this.userData.encryptedPassword}/manifest.json`;
     this.manifests = {};
     this.supportedResources = {};
     this.skipFailedAddons = skipFailedAddons;
@@ -157,10 +159,6 @@ export class AIOStreams {
       }
     );
 
-    // step 2
-    // get all parsed stream objects and errors from all addons that have the stream resource.
-    // and that support the type and match the id prefix
-
     const { streams, errors, statistics } = await this.fetcher.fetch(
       supportedAddons,
       type,
@@ -175,43 +173,8 @@ export class AIOStreams {
       }))
     );
 
-    // step 4
-    // deduplicate streams based on the depuplicatoroptions
+    let finalStreams = await this._processStreams(streams, type, id);
 
-    const deduplicatedStreams = await this.deduplicator.deduplicate(streams);
-
-    let sortedStreams = await this.sorter.sort(
-      deduplicatedStreams,
-      id.startsWith('kitsu') ? 'anime' : type
-    );
-    sortedStreams = sortedStreams
-      // remove HDR+DV from visual tags after filtering/sorting
-      .map((stream) => {
-        if (stream.parsedFile?.visualTags?.includes('HDR+DV')) {
-          stream.parsedFile.visualTags = stream.parsedFile.visualTags.filter(
-            (tag) => tag !== 'HDR+DV'
-          );
-        }
-        return stream;
-      });
-
-    // step 6
-    // limit the number of streams based on the limit criteria.
-
-    const limitedStreams = await this.limiter.limit(sortedStreams);
-
-    // step 7
-    // apply stream expressions last
-    const postFilteredStreams =
-      await this.filterer.applyStreamExpressionFilters(limitedStreams);
-    // step 8
-    // proxify streaming links if a proxy is provided
-
-    const proxifiedStreams = await this.proxifier.proxify(postFilteredStreams);
-
-    let finalStreams = this.applyModifications(proxifiedStreams);
-
-    // step 8
     // if this.userData.precacheNextEpisode is true, start a new thread to request the next episode, check if
     // all provider streams are uncached, and only if so, then send a request to the first uncached stream in the list.
     if (this.userData.precacheNextEpisode && !preCaching) {
@@ -241,25 +204,6 @@ export class AIOStreams {
       }
     }
 
-    if (this.userData.externalDownloads) {
-      logger.info(`Adding external downloads to streams`);
-      let count = 0;
-      // for each stream object, insert a new stream object, replacing the url with undefined, and appending its value to externalUrl instead
-      // and place it right after the original stream object
-      const streamsWithExternalDownloads: ParsedStream[] = [];
-      for (const stream of proxifiedStreams) {
-        streamsWithExternalDownloads.push(stream);
-        if (stream.url) {
-          const downloadableStream: ParsedStream =
-            StreamUtils.createDownloadableStream(stream);
-          streamsWithExternalDownloads.push(downloadableStream);
-          count++;
-        }
-      }
-      logger.info(`Added ${count} external downloads to streams`);
-      finalStreams = streamsWithExternalDownloads;
-    }
-    // step 9
     // return the final list of streams, followed by the error streams.
     logger.info(
       `Returning ${finalStreams.length} streams and ${errors.length} errors and ${statistics.length} statistic`
@@ -313,7 +257,7 @@ export class AIOStreams {
       // reset the type from the request (which is the overriden type) to the actual type
       type = modification.type;
     }
-    const parsedExtras = new CatalogExtras(extras);
+    const parsedExtras = new ExtrasParser(extras);
     logger.debug(`Parsed extras: ${JSON.stringify(parsedExtras)}`);
     if (parsedExtras.genre === 'None') {
       logger.debug(`Genre extra is None, removing genre extra`);
@@ -331,6 +275,13 @@ export class AIOStreams {
         extrasString
       );
     } catch (error) {
+      if (extras && extras.includes('skip')) {
+        return {
+          success: true,
+          data: [],
+          errors: [],
+        };
+      }
       return {
         success: false,
         data: [],
@@ -348,46 +299,63 @@ export class AIOStreams {
     );
 
     // apply catalog modifications
-
-    if (modification) {
-      if (modification.shuffle && !(extras && extras.includes('search'))) {
-        // shuffle the catalog array if it is not a search
-        const cacheKey = `shuffle-${type}-${actualCatalogId}-${extras}-${this.userData.uuid}`;
-        const cachedShuffle = shuffleCache.get(cacheKey, false);
-        if (cachedShuffle) {
-          catalog = cachedShuffle;
-        } else {
-          for (let i = catalog.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [catalog[i], catalog[j]] = [catalog[j], catalog[i]];
-          }
-          if (modification.persistShuffleFor) {
-            shuffleCache.set(
-              cacheKey,
-              catalog,
-              modification.persistShuffleFor * 3600
-            );
-          }
+    if (modification?.shuffle && !(extras && extras.includes('search'))) {
+      // shuffle the catalog array if it is not a search
+      const cacheKey = `shuffle-${type}-${actualCatalogId}-${extras}-${this.userData.uuid}`;
+      const cachedShuffle = shuffleCache.get(cacheKey);
+      if (cachedShuffle) {
+        catalog = cachedShuffle;
+      } else {
+        for (let i = catalog.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [catalog[i], catalog[j]] = [catalog[j], catalog[i]];
         }
-      }
-      if (modification.rpdb && this.userData.rpdbApiKey) {
-        const rpdb = new RPDB(this.userData.rpdbApiKey);
-        catalog = catalog.map((item) => {
-          const posterUrl = rpdb.getPosterUrl(
-            type,
-            (item as any).imdb_id || item.id
+        if (modification.persistShuffleFor) {
+          shuffleCache.set(
+            cacheKey,
+            catalog,
+            modification.persistShuffleFor * 3600
           );
-          if (posterUrl) {
-            item.poster = posterUrl;
-          }
-          return item;
-        });
+        }
       }
     }
 
-    if (this.userData.enhancePosters) {
-      catalog = catalog.map((item) => {
-        if (Math.random() < 0.2) {
+    const rpdbApiKey =
+      modification?.rpdb && this.userData.rpdbApiKey
+        ? this.userData.rpdbApiKey
+        : undefined;
+    const rpdbApi = rpdbApiKey ? new RPDB(rpdbApiKey) : undefined;
+
+    catalog = await Promise.all(
+      catalog.map(async (item) => {
+        // Apply RPDB poster modification
+        if (rpdbApiKey && item.poster) {
+          let posterUrl = item.poster;
+          if (this.userData.rpdbUseRedirectApi !== false && Env.BASE_URL) {
+            const id = (item as any).imdb_id || item.id;
+            const url = new URL(Env.BASE_URL);
+            url.pathname = '/api/v1/rpdb';
+            url.searchParams.set('id', id);
+            url.searchParams.set('type', type);
+            url.searchParams.set('fallback', item.poster);
+            url.searchParams.set('apiKey', rpdbApiKey);
+            posterUrl = url.toString();
+          } else {
+            const rpdbPosterUrl = await rpdbApi!.getPosterUrl(
+              type,
+              (item as any).imdb_id || item.id,
+              false
+            );
+            if (rpdbPosterUrl) {
+              posterUrl = rpdbPosterUrl;
+            }
+          }
+
+          item.poster = posterUrl;
+        }
+
+        // Apply poster enhancement
+        if (this.userData.enhancePosters && Math.random() < 0.2) {
           item.poster = Buffer.from(
             constants.DEFAULT_POSTERS[
               Math.floor(Math.random() * constants.DEFAULT_POSTERS.length)
@@ -395,22 +363,21 @@ export class AIOStreams {
             'base64'
           ).toString('utf-8');
         }
-        return item;
-      });
-    }
 
-    // step 4
-    return {
-      success: true,
-      data: catalog,
-      errors: [],
-    };
+        if (item.links) {
+          item.links = this.convertDiscoverDeepLinks(item.links);
+        }
+        return item;
+      })
+    );
+
+    return { success: true, data: catalog, errors: [] };
   }
 
   public async getMeta(
     type: string,
     id: string
-  ): Promise<AIOStreamsResponse<Meta | null>> {
+  ): Promise<AIOStreamsResponse<ParsedMeta | null>> {
     logger.info(`Handling meta request`, { type, id });
 
     // Build prioritized list of candidate addons (naturally ordered by priority)
@@ -498,7 +465,24 @@ export class AIOStreams {
           addonName: candidate.addon.name,
           addonInstanceId: candidate.instanceId,
         });
+        meta.links = this.convertDiscoverDeepLinks(meta.links);
 
+        if (meta.videos) {
+          meta.videos = await Promise.all(
+            meta.videos.map(async (video) => {
+              if (!video.streams) {
+                return video;
+              }
+              video.streams = await this._processStreams(
+                video.streams,
+                type,
+                id,
+                true
+              );
+              return video;
+            })
+          );
+        }
         return {
           success: true,
           data: meta,
@@ -548,7 +532,7 @@ export class AIOStreams {
     id: string,
     extras?: string
   ): Promise<AIOStreamsResponse<Subtitle[]>> {
-    logger.info(`getSubtitles: ${id}`);
+    logger.info(`Handling subtitle request`, { type, id, extras });
 
     // Find all addons that support subtitles for this type and id prefix
     const supportedAddons = [];
@@ -570,6 +554,8 @@ export class AIOStreams {
         }
       }
     }
+    const parsedExtras = new ExtrasParser(extras);
+    logger.debug(`Parsed extras: ${JSON.stringify(parsedExtras)}`);
 
     // Request subtitles from all supported addons in parallel
     let errors: AIOStreamsError[] = this.addonInitialisationErrors.map(
@@ -586,7 +572,7 @@ export class AIOStreams {
           const subtitles = await new Wrapper(addon).getSubtitles(
             type,
             id,
-            extras
+            parsedExtras.toString()
           );
           if (subtitles) {
             allSubtitles.push(...subtitles);
@@ -673,19 +659,24 @@ export class AIOStreams {
         preset.options
       );
       this.addons.push(
-        ...addons.map((a) => ({
-          ...a,
-          presetInstanceId: preset.instanceId,
-          // if no identifier is present, we can assume that the preset can only generate one addon at a time and so no
-          // unique identifier is needed as the preset instance id is enough to identify the addon
-          instanceId: `${preset.instanceId}${getSimpleTextHash(`${a.identifier ?? ''}`).slice(0, 4)}`,
-        }))
+        ...addons.map(
+          (a): Addon => ({
+            ...a,
+            preset: {
+              ...a.preset,
+              id: preset.instanceId,
+            },
+            // if no identifier is present, we can assume that the preset can only generate one addon at a time and so no
+            // unique identifier is needed as the preset instance id is enough to identify the addon
+            instanceId: `${preset.instanceId}${getSimpleTextHash(`${a.identifier ?? ''}`).slice(0, 4)}`,
+          })
+        )
       );
     }
 
     if (this.addons.length > Env.MAX_ADDONS) {
       throw new Error(
-        `Your current configuration requires ${this.addons.length} addons, but the maximum allowed is ${Env.MAX_ADDONS}. Please reduce the number of addons, or increase it in the environment variables.`
+        `Your current configuration requires ${this.addons.length} addons, but the maximum allowed is ${Env.MAX_ADDONS}. Please reduce the number of addons installed or services enabled. If you own the instance or know the owner, increase the value of the MAX_ADDONS environment variable.`
       );
     }
   }
@@ -718,7 +709,7 @@ export class AIOStreams {
       if (!manifest) continue;
 
       // Convert string resources to StrictManifestResource objects
-      const addonResources = manifest.resources.map((resource) => {
+      let addonResources = manifest.resources.map((resource) => {
         if (typeof resource === 'string') {
           return {
             name: resource as Resource,
@@ -736,12 +727,6 @@ export class AIOStreams {
         continue;
       }
 
-      logger.verbose(
-        `Determined that ${getAddonName(addon)} (Instance ID: ${instanceId}) has support for the following resources: ${JSON.stringify(
-          addonResources
-        )}`
-      );
-
       // Filter and merge resources
       for (const resource of addonResources) {
         if (
@@ -749,6 +734,9 @@ export class AIOStreams {
           addon.resources.length > 0 &&
           !addon.resources.includes(resource.name)
         ) {
+          addonResources = addonResources.filter(
+            (r) => r.name !== resource.name
+          );
           continue;
         }
 
@@ -776,15 +764,17 @@ export class AIOStreams {
               ...new Set([...existing.idPrefixes, ...resource.idPrefixes]),
             ];
           } else {
-            logger.warn(
-              `Addon ${getAddonName(addon)} does not provide idPrefixes for type ${resource.name}, setting idPrefixes to undefined`
-            );
+            if (resource.name !== 'catalog' && !resource.idPrefixes?.length) {
+              logger.warn(
+                `Addon ${getAddonName(addon)} does not provide idPrefixes for type ${resource.name}, setting idPrefixes to undefined`
+              );
+            }
             // if an addon for this type does not provide idPrefixes, we set it to undefined
             // to ensure it works with at least some platforms on stremio rather than none.
             existing.idPrefixes = undefined;
           }
         } else {
-          if (!resource.idPrefixes?.length) {
+          if (!resource.idPrefixes?.length && resource.name !== 'catalog') {
             logger.warn(
               `Addon ${getAddonName(addon)} does not provide idPrefixes for type ${resource.name}, setting idPrefixes to undefined`
             );
@@ -801,6 +791,12 @@ export class AIOStreams {
           });
         }
       }
+
+      logger.verbose(
+        `Determined that ${getAddonName(addon)} (Instance ID: ${instanceId}) has support for the following resources: ${JSON.stringify(
+          addonResources
+        )}`
+      );
 
       // Add catalogs with prefixed  IDs (ensure to check that if addon.resources is defined and does not have catalog
       // then we do not add the catalogs)
@@ -860,6 +856,17 @@ export class AIOStreams {
       )}`
     );
 
+    // if meta resouce exists, and aiostreamserror to idPrefixes only if idPrefixes is defined
+    const metaResource = this.finalResources.find((r) => r.name === 'meta');
+    if (metaResource) {
+      if (metaResource.idPrefixes) {
+        metaResource.idPrefixes = [
+          ...metaResource.idPrefixes,
+          'aiostreamserror',
+        ];
+      }
+    }
+
     if (this.userData.catalogModifications) {
       this.finalCatalogs = this.finalCatalogs
         // Sort catalogs based on catalogModifications order, with non-modified catalogs at the end
@@ -918,7 +925,10 @@ export class AIOStreams {
               genreExtra.isRequired = true;
             } else {
               // add a new genre extra with only one option 'None'
-              catalog.extra?.push({
+              if (!catalog.extra) {
+                catalog.extra = [];
+              }
+              catalog.extra.push({
                 name: 'genre',
                 options: ['None'],
                 isRequired: true,
@@ -1007,7 +1017,7 @@ export class AIOStreams {
       const proxy =
         this.userData.proxy?.enabled &&
         (!this.userData.proxy?.proxiedAddons?.length ||
-          this.userData.proxy.proxiedAddons.includes(addon.presetInstanceId));
+          this.userData.proxy.proxiedAddons.includes(addon.preset.id));
       logger.debug(
         `Using ${proxy ? 'proxy' : 'user'} ip for ${getAddonName(addon)}: ${
           proxy
@@ -1031,12 +1041,13 @@ export class AIOStreams {
         `${this.userData.uuid} detected to be trying to cause infinite self scraping`
       );
       throw new Error(
-        `${getAddonName(addon)} appears to be trying to scrape the current user's AIOStreams instance.`
+        `${getAddonName(addon)} would cause infinite self scraping, ensure you wrap a different AIOStreams user.`
       );
     } else if (
       ((baseUrl && manifestUrl.host === baseUrl.host) ||
         (manifestUrl.host.startsWith('localhost') &&
           manifestUrl.port === Env.PORT.toString())) &&
+      !manifestUrl.pathname.startsWith('/builtins') &&
       Env.DISABLE_SELF_SCRAPING === true
     ) {
       throw new Error(
@@ -1044,12 +1055,12 @@ export class AIOStreams {
       );
     }
     if (
-      addon.presetInstanceId &&
-      FeatureControl.disabledAddons.has(addon.presetInstanceId)
+      addon.preset.type &&
+      FeatureControl.disabledAddons.has(addon.preset.type)
     ) {
       throw new Error(
         `Addon ${getAddonName(addon)} is disabled: ${FeatureControl.disabledAddons.get(
-          addon.presetType
+          addon.preset.type
         )}`
       );
     } else if (
@@ -1084,68 +1095,261 @@ export class AIOStreams {
     return streams;
   }
 
+  private convertDiscoverDeepLinks(items: Meta['links']) {
+    if (!items) {
+      return items;
+    }
+    return items.map((link) => {
+      try {
+        if (link.url.startsWith('stremio:///discover/')) {
+          const linkUrl = new URL(decodeURIComponent(link.url.split('/')[4]));
+          // see if the linked addon is one of our addons and replace the transport url with our manifest url if so
+          const addon = this.addons.find(
+            (a) => new URL(a.manifestUrl).hostname === linkUrl.hostname
+          );
+          if (addon) {
+            const [_, linkType, catalogIdAndQuery] = link.url
+              .replace('stremio:///discover/', '')
+              .split('/');
+            const newCatalogId = `${addon.instanceId}.${catalogIdAndQuery}`;
+            const newTransportUrl = encodeURIComponent(this.manifestUrl);
+            link.url = `stremio:///discover/${newTransportUrl}/${linkType}/${newCatalogId}`;
+          }
+        }
+      } catch {}
+      return link;
+    });
+  }
+
+  private async getMetadata(
+    id: string
+  ): Promise<TMDBMetadataResponse | undefined> {
+    try {
+      const metadata = await new TMDBMetadata({
+        accessToken: this.userData.tmdbAccessToken,
+        apiKey: this.userData.tmdbApiKey,
+      }).getMetadata(id, 'series');
+      return metadata;
+    } catch (error) {
+      logger.warn(
+        `Error getting metadata for ${id}, will not be able to precache next season if necessary`,
+        {
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      return undefined;
+    }
+  }
+
+  private _getNextEpisode(
+    currentSeason: number,
+    currentEpisode: number,
+    metadata?: TMDBMetadataResponse
+  ): {
+    season: number;
+    episode: number;
+  } {
+    let season = currentSeason;
+    let episode = currentEpisode + 1;
+    const episodeCount = metadata?.seasons?.find(
+      (s) => s.season_number === Number(season)
+    )?.episode_count;
+
+    // If we are at the last episode of the season, try to move to the next season
+    if (episodeCount && currentEpisode === episodeCount) {
+      const nextSeasonNumber = currentSeason + 1;
+      if (
+        metadata?.seasons?.find((s) => s.season_number === nextSeasonNumber)
+      ) {
+        logger.debug(
+          `Current episode is the last of season ${currentSeason}, moving to S${nextSeasonNumber}E01.`
+        );
+        season = nextSeasonNumber;
+        episode = 1;
+      }
+    }
+    return { season, episode };
+  }
+
+  private async _processStreams(
+    streams: ParsedStream[],
+    type: string,
+    id: string,
+    isMeta: boolean = false
+  ): Promise<ParsedStream[]> {
+    let processedStreams = streams;
+
+    if (isMeta) {
+      processedStreams = await this.filterer.filter(processedStreams, type, id);
+    }
+
+    processedStreams = await this.deduplicator.deduplicate(processedStreams);
+
+    if (isMeta) {
+      await this.precomputer.precompute(processedStreams);
+    }
+
+    let finalStreams = this.applyModifications(
+      await this.proxifier.proxify(
+        await this.filterer.applyStreamExpressionFilters(
+          await this.limiter.limit(
+            await this.sorter.sort(
+              processedStreams,
+              id.startsWith('kitsu') ? 'anime' : type
+            )
+          )
+        )
+      )
+    ).map((stream) => {
+      if (stream.parsedFile) {
+        stream.parsedFile.visualTags = stream.parsedFile.visualTags.filter(
+          (tag) => !constants.FAKE_VISUAL_TAGS.includes(tag as any)
+        );
+      }
+      return stream;
+    });
+
+    if (this.userData.externalDownloads) {
+      const streamsWithExternalDownloads: ParsedStream[] = [];
+      for (const stream of finalStreams) {
+        streamsWithExternalDownloads.push(stream);
+        if (stream.url) {
+          const downloadableStream: ParsedStream =
+            StreamUtils.createDownloadableStream(stream);
+          streamsWithExternalDownloads.push(downloadableStream);
+        }
+      }
+      logger.info(
+        `Added ${streamsWithExternalDownloads.length - finalStreams.length} external downloads to streams`
+      );
+      finalStreams = streamsWithExternalDownloads;
+    }
+
+    return finalStreams;
+  }
+
+  private async _fetchAndHandleRedirects(stream: ParsedStream, id: string) {
+    const wrapper = new Wrapper(stream.addon);
+    if (!stream.url) {
+      throw new Error(`Stream URL is undefined`);
+    }
+    const initialResponse = await wrapper.makeRequest(stream.url, {
+      timeout: 30000,
+      rawOptions: { redirect: 'manual' },
+    });
+
+    // If it's a redirect, handle it
+    if (initialResponse.status >= 300 && initialResponse.status < 400) {
+      const redirectUrl = initialResponse.headers.get('Location');
+      if (!redirectUrl) {
+        throw new Error(
+          `Redirect response (${initialResponse.status}) has no Location header.`
+        );
+      }
+
+      const absoluteRedirectUrl = new URL(redirectUrl, stream.url).toString();
+      const originalHost = new URL(stream.url).host;
+      const redirectHost = new URL(absoluteRedirectUrl).host;
+
+      if (redirectHost !== originalHost) {
+        throw new Error(
+          `Host mismatch during redirect: original (${originalHost}) vs redirect (${redirectHost}). Not following.`
+        );
+      }
+
+      logger.debug(
+        `Following same-domain redirect to ${makeUrlLogSafe(absoluteRedirectUrl)} for precaching ${id}`
+      );
+      return wrapper.makeRequest(absoluteRedirectUrl, { timeout: 30000 });
+    }
+
+    return initialResponse;
+  }
+
   private async precacheNextEpisode(type: string, id: string) {
     const seasonEpisodeRegex = /:(\d+):(\d+)$/;
     const match = id.match(seasonEpisodeRegex);
     if (!match) {
       return;
     }
-    const season = match[1];
-    const episode = match[2];
     const titleId = id.replace(seasonEpisodeRegex, '');
-    const nextEpisodeId = `${titleId}:${season}:${Number(episode) + 1}`;
+    const currentSeason = Number(match[1]);
+    const currentEpisode = Number(match[2]);
+
+    const metadata = await this.getMetadata(id);
+
+    const { season: seasonToPrecache, episode: episodeToPrecache } =
+      this._getNextEpisode(currentSeason, currentEpisode, metadata);
+
+    const precacheId = `${titleId}:${seasonToPrecache}:${episodeToPrecache}`;
     logger.info(`Pre-caching next episode of ${titleId}`, {
-      season,
-      episode,
-      nextEpisode: Number(episode) + 1,
-      nextEpisodeId,
+      currentSeason,
+      currentEpisode,
+      episodeToPrecache,
+      seasonToPrecache,
+      precacheId,
     });
+
     // modify userData to remove the excludeUncached filter
     const userData = structuredClone(this.userData);
     userData.excludeUncached = false;
+    userData.groups = undefined;
     this.setUserData(userData);
-    const nextStreamsResponse = await this.getStreams(
-      nextEpisodeId,
-      type,
-      true
+
+    const nextStreamsResponse = await this.getStreams(precacheId, type, true);
+    if (!nextStreamsResponse.success) {
+      logger.error(`Failed to get streams during precaching ${id}`, {
+        error: nextStreamsResponse.errors,
+      });
+      return;
+    }
+
+    const serviceStreams = nextStreamsResponse.data.streams.filter(
+      (stream) => stream.service
     );
-    if (nextStreamsResponse.success) {
-      const nextStreams = nextStreamsResponse.data.streams;
-      const serviceStreams = nextStreams.filter((stream) => stream.service);
-      if (
-        serviceStreams.every((stream) => stream.service?.cached === false) || // only if all streams are uncached
-        this.userData.alwaysPrecache // or if alwaysPrecache is true
-      ) {
-        const firstUncachedStream = serviceStreams.find(
-          (stream) => stream.service?.cached === false
+    const shouldPrecache =
+      serviceStreams.every((stream) => stream.service?.cached === false) ||
+      this.userData.alwaysPrecache;
+
+    if (!shouldPrecache) {
+      logger.debug(
+        `Skipping precaching ${id} as all streams are cached or Always Precache is disabled`
+      );
+      return;
+    }
+
+    const firstUncachedStream = serviceStreams.find(
+      (stream) => stream.service?.cached === false
+    );
+    if (!firstUncachedStream || !firstUncachedStream.url) {
+      logger.debug(
+        `Skipping precaching ${id} as no uncached streams were found or it had no URL`
+      );
+      return;
+    }
+
+    logger.debug(
+      `Selected following stream for precaching:\n${firstUncachedStream.originalName}\n${firstUncachedStream.originalDescription}`
+    );
+
+    try {
+      const response = await this._fetchAndHandleRedirects(
+        firstUncachedStream,
+        precacheId
+      );
+      logger.debug(`Response: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(
+          `Final Response not OK: ${response.status} ${response.statusText}`
         );
-        if (firstUncachedStream && firstUncachedStream.url) {
-          try {
-            const wrapper = new Wrapper(firstUncachedStream.addon);
-            logger.debug(
-              `The following stream was selected for precaching:\n${firstUncachedStream.originalName}\n${firstUncachedStream.originalDescription}`
-            );
-            const response = await wrapper.makeRequest(
-              firstUncachedStream.url,
-              30000
-            );
-            if (!response.ok) {
-              throw new Error(`${response.status} ${response.statusText}`);
-            }
-            const cacheKey = `precache-${type}-${id}-${this.userData.uuid}`;
-            precacheCache.set(
-              cacheKey,
-              nextStreams,
-              Env.PRECACHE_NEXT_EPISODE_MIN_INTERVAL
-            );
-            logger.debug(`Response: ${response.status} ${response.statusText}`);
-          } catch (error) {
-            logger.error(`Error pinging url of first uncached stream`, {
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
       }
+      const cacheKey = `precache-${type}-${id}-${this.userData.uuid}`;
+      precacheCache.set(cacheKey, true, Env.PRECACHE_NEXT_EPISODE_MIN_INTERVAL);
+      logger.info(`Successfully precached a stream for ${id} (${type})`);
+    } catch (error) {
+      logger.error(`Error pinging url of first uncached stream`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }

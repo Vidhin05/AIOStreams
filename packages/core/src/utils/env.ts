@@ -7,18 +7,20 @@ import {
   bool,
   json,
   makeValidator,
+  makeExactValidator,
   num,
   EnvError,
   port,
+  EnvMissingError,
 } from 'envalid';
 import { ResourceManager } from './resources';
 import * as constants from './constants';
+import { randomBytes } from 'crypto';
 try {
   dotenv.config({ path: path.resolve(__dirname, '../../../../.env') });
 } catch (error) {
   console.error('Error loading .env file', error);
 }
-
 let metadata: any = undefined;
 try {
   metadata = ResourceManager.getResource('metadata.json') || {};
@@ -31,6 +33,17 @@ const secretKey = makeValidator((x) => {
     throw new EnvError('Secret key must be a 64-character hex string');
   }
   return x;
+});
+
+const commaSeparated = makeExactValidator<string[]>((x) => {
+  if (x === '') {
+    return [];
+  }
+  const parsed = x.split(',').map((item) => item.trim());
+  if (parsed.some((item) => item === '')) {
+    throw new EnvError('Comma separated values cannot be empty');
+  }
+  return parsed;
 });
 
 const regexes = makeValidator((x) => {
@@ -78,7 +91,7 @@ const namedRegexes = makeValidator((x) => {
 
 const url = makeValidator((x) => {
   if (x === '') {
-    return x;
+    throw new EnvMissingError(`URL cannot be empty`);
   }
   try {
     new URL(x);
@@ -199,9 +212,17 @@ export const Env = cleanEnv(process.env, {
     choices: ['none', 'trusted', 'all'],
   }),
   BASE_URL: url({
-    desc: 'Base URL of the addon e.g. https://aiostreams.com',
-    default: undefined,
-    devDefault: 'http://localhost:3000',
+    desc: 'Base URL of the addon, including protocol, hostname, and optionally port',
+    example: 'https://aiostreams.example.com',
+    devDefault: `http://localhost:${process.env.PORT || 3000}`,
+  }),
+  INTERNAL_URL: url({
+    default: `http://localhost:${process.env.PORT || 3000}`,
+    desc: 'Internal URL of the addon, used for internal communication between built-in addons and the server',
+  }),
+  INTERNAL_SECRET: readonly({
+    default: randomBytes(32).toString('hex'),
+    desc: 'Internal secret for the addon, used for internal communication between built-in addons and the server',
   }),
   ADDON_NAME: str({
     default: 'AIOStreams',
@@ -223,10 +244,10 @@ export const Env = cleanEnv(process.env, {
     desc: 'Secret key for the addon, used for encryption and must be 64 characters of hex',
     example: 'Generate using: openssl rand -hex 32',
   }),
-  ADDON_PASSWORD: str({
+  ADDON_PASSWORD: commaSeparated({
     default:
-      typeof process.env.API_KEY === 'string' ? process.env.API_KEY : undefined,
-    desc: 'Password required to create and modify addon configurations',
+      typeof process.env.API_KEY === 'string' ? [process.env.API_KEY] : [],
+    desc: 'Password required to create and modify addon configurations. Supports multiple passwords separated by commas.',
   }),
   DATABASE_URI: str({
     default: 'sqlite://./data/db.sqlite',
@@ -251,6 +272,10 @@ export const Env = cleanEnv(process.env, {
   TMDB_ACCESS_TOKEN: str({
     default: undefined,
     desc: 'TMDB Read Access Token. Used for fetching metadata for the strict title matching option.',
+  }),
+  TMDB_API_KEY: str({
+    default: undefined,
+    desc: 'TMDB API Key. Used for fetching metadata for the strict title matching option.',
   }),
 
   // logging settings
@@ -331,24 +356,48 @@ export const Env = cleanEnv(process.env, {
     default: 300,
     desc: 'Cache TTL for manifest files',
   }),
+  MANIFEST_CACHE_MAX_SIZE: num({
+    default: undefined,
+    desc: 'Max number of manifest items to cache',
+  }),
   SUBTITLE_CACHE_TTL: num({
     default: 300,
     desc: 'Cache TTL for subtitle files',
+  }),
+  SUBTITLE_CACHE_MAX_SIZE: num({
+    default: undefined,
+    desc: 'Max number of subtitle items to cache',
   }),
   STREAM_CACHE_TTL: num({
     default: -1,
     desc: 'Cache TTL for stream files. If -1, no caching will be done.',
   }),
+  STREAM_CACHE_MAX_SIZE: num({
+    default: undefined,
+    desc: 'Max number of stream items to cache',
+  }),
   CATALOG_CACHE_TTL: num({
     default: 300,
     desc: 'Cache TTL for catalog files',
   }),
+  CATALOG_CACHE_MAX_SIZE: num({
+    default: 1000,
+    desc: 'Max number of catalog items to cache',
+  }),
   META_CACHE_TTL: num({
     default: 300,
+  }),
+  META_CACHE_MAX_SIZE: num({
+    default: undefined,
+    desc: 'Max number of metadata items to cache',
   }),
   ADDON_CATALOG_CACHE_TTL: num({
     default: 300,
     desc: 'Cache TTL for addon catalog files',
+  }),
+  ADDON_CATALOG_CACHE_MAX_SIZE: num({
+    default: undefined,
+    desc: 'Max number of addon catalog items to cache',
   }),
   RPDB_API_KEY_VALIDITY_CACHE_TTL: num({
     default: 604800, // 7 days
@@ -378,6 +427,15 @@ export const Env = cleanEnv(process.env, {
   MAX_GROUPS: num({
     default: 20,
     desc: 'Max number of groups',
+  }),
+
+  ALLOWED_REGEX_PATTERNS: json({
+    default: [],
+    desc: 'Allowed regex patterns',
+  }),
+  ALLOWED_REGEX_PATTERNS_DESCRIPTION: str({
+    default: undefined,
+    desc: 'Description of the allowed regex patterns',
   }),
 
   MAX_TIMEOUT: num({
@@ -433,6 +491,10 @@ export const Env = cleanEnv(process.env, {
     default: undefined,
     desc: 'Force proxy url',
   }),
+  FORCE_PROXY_PUBLIC_URL: url({
+    default: undefined,
+    desc: 'Force proxy public url',
+  }),
   FORCE_PROXY_CREDENTIALS: str({
     default: undefined,
     desc: 'Force proxy credentials',
@@ -461,6 +523,10 @@ export const Env = cleanEnv(process.env, {
   DEFAULT_PROXY_URL: url({
     default: undefined,
     desc: 'Default proxy url',
+  }),
+  DEFAULT_PROXY_PUBLIC_URL: url({
+    default: undefined,
+    desc: 'Default proxy public url',
   }),
   DEFAULT_PROXY_CREDENTIALS: str({
     default: undefined,
@@ -734,7 +800,7 @@ export const Env = cleanEnv(process.env, {
 
   // Peerflix settings
   PEERFLIX_URL: url({
-    default: 'https://peerflix-addon.onrender.com',
+    default: 'https://addon.peerflix.mov',
     desc: 'Peerflix URL',
   }),
   DEFAULT_PEERFLIX_TIMEOUT: num({
@@ -1212,6 +1278,179 @@ export const Env = cleanEnv(process.env, {
     desc: 'Default OpenSubtitles V3 Plus user agent',
   }),
 
+  AI_SEARCH_URL: url({
+    default: 'https://stremio.itcon.au',
+    desc: 'AI Search URL',
+  }),
+  DEFAULT_AI_SEARCH_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default AI Search timeout',
+  }),
+  DEFAULT_AI_SEARCH_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default AI Search user agent',
+  }),
+
+  FKSTREAM_URL: url({
+    default: 'https://streamio.fankai.fr',
+    desc: 'FKStream URL',
+  }),
+  DEFAULT_FKSTREAM_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default FKStream timeout',
+  }),
+  DEFAULT_FKSTREAM_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default FKStream user agent',
+  }),
+
+  AIOSUBTITLE_URL: url({
+    default: 'https://3b4bbf5252c4-aio-streaming.baby-beamup.club',
+    desc: 'AIOSubtitle URL',
+  }),
+  DEFAULT_AIOSUBTITLE_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default AIOSubtitle timeout',
+  }),
+  DEFAULT_AIOSUBTITLE_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default AIOSubtitle user agent',
+  }),
+
+  SUBHERO_URL: url({
+    default: 'https://subhero.onrender.com',
+    desc: 'SubHero URL',
+  }),
+  DEFAULT_SUBHERO_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default SubHero timeout',
+  }),
+  DEFAULT_SUBHERO_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default SubHero user agent',
+  }),
+
+  STREAMASIA_URL: url({
+    default: 'https://stremio-dramacool-addon.xyz',
+    desc: 'StreamAsia URL',
+  }),
+  DEFAULT_STREAMASIA_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default StreamAsia timeout',
+  }),
+  DEFAULT_STREAMASIA_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default StreamAsia user agent',
+  }),
+
+  MORE_LIKE_THIS_URL: url({
+    default: 'https://bbab4a35b833-more-like-this.baby-beamup.club',
+    desc: 'More Like This URL',
+  }),
+  DEFAULT_MORE_LIKE_THIS_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default More Like This timeout',
+  }),
+  DEFAULT_MORE_LIKE_THIS_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default More Like This user agent',
+  }),
+
+  CONTENT_DEEP_DIVE_URL: url({
+    default:
+      'https://stremio-content-deepdive-addon-dc8f7b513289.herokuapp.com',
+    desc: 'Content Deep Dive URL',
+  }),
+  DEFAULT_CONTENT_DEEP_DIVE_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default Content Deep Dive timeout',
+  }),
+  DEFAULT_CONTENT_DEEP_DIVE_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default Content Deep Dive user agent',
+  }),
+
+  AI_COMPANION_URL: url({
+    default: 'https://ai-companion.saladprecedestretch123.uk',
+    desc: 'AI Companion URL',
+  }),
+  DEFAULT_AI_COMPANION_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default AI Companion timeout',
+  }),
+  DEFAULT_AI_COMPANION_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default AI Companion user agent',
+  }),
+
+  ASTREAM_URL: url({
+    default: 'https://astream.stremiofr.com',
+    desc: 'AStream URL',
+  }),
+  DEFAULT_ASTREAM_TIMEOUT: num({
+    default: undefined,
+    desc: 'Default AStream timeout',
+  }),
+  DEFAULT_ASTREAM_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Default AStream user agent',
+  }),
+
+  BUILTIN_STREMTHRU_URL: url({
+    default: 'https://stremthru.13377001.xyz',
+    desc: 'Builtin StremThru URL',
+  }),
+
+  BUILTIN_GDRIVE_CLIENT_ID: str({
+    default: undefined,
+    desc: 'Builtin GDrive client ID',
+  }),
+  BUILTIN_GDRIVE_CLIENT_SECRET: str({
+    default: undefined,
+    desc: 'Builtin GDrive client secret',
+  }),
+  BUILTIN_GDRIVE_TIMEOUT: num({
+    default: undefined,
+    desc: 'Builtin GDrive timeout',
+  }),
+  BUILTIN_GDRIVE_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Builtin GDrive user agent',
+  }),
+  BUILTIN_GDRIVE_PAGE_SIZE_LIMIT: num({
+    default: 1000,
+    desc: 'Builtin GDrive page size limit',
+  }),
+
+  BUILTIN_TORBOX_SEARCH_TIMEOUT: num({
+    default: undefined,
+    desc: 'Builtin TorBox Search timeout',
+  }),
+  BUILTIN_TORBOX_SEARCH_USER_AGENT: userAgent({
+    default: undefined,
+    desc: 'Builtin TorBox Search user agent',
+  }),
+  BUILTIN_TORBOX_SEARCH_SEARCH_API_TIMEOUT: num({
+    default: 30000, // 30 seconds
+    desc: 'Builtin TorBox Search search API timeout',
+  }),
+  BUILTIN_TORBOX_SEARCH_SEARCH_API_CACHE_TTL: num({
+    default: 1 * 60 * 60, // 1 hour
+    desc: 'Builtin TorBox Search search API cache TTL',
+  }),
+  BUILTIN_TORBOX_SEARCH_METADATA_CACHE_TTL: num({
+    default: 7 * 24 * 60 * 60, // 7 days
+    desc: 'Builtin TorBox Search metadata cache TTL',
+  }),
+  BUILTIN_TORBOX_SEARCH_INSTANT_AVAILABILITY_CACHE_TTL: num({
+    default: 15 * 60, // 15 minutes
+    desc: 'Builtin TorBox Search instant availability cache TTL',
+  }),
+  BUILTIN_TORBOX_SEARCH_CACHE_PER_USER_SEARCH_ENGINE: bool({
+    default: false,
+    desc: 'Whether to cache results separately for every user that is using their own search engines.',
+  }),
+
   // Rate limiting settings
   DISABLE_RATE_LIMITS: bool({
     default: false,
@@ -1292,6 +1531,14 @@ export const Env = cleanEnv(process.env, {
   }),
   STREMIO_META_RATE_LIMIT_MAX_REQUESTS: num({
     default: 15, // allow 100 requests per IP per minute
+    desc: 'Maximum number of requests allowed per IP within the time window',
+  }),
+  GDRIVE_STREAM_RATE_LIMIT_WINDOW: num({
+    default: 5, // 1 minute
+    desc: 'Time window for Google Drive stream rate limiting in seconds',
+  }),
+  GDRIVE_STREAM_RATE_LIMIT_MAX_REQUESTS: num({
+    default: 10, // allow 100 requests per IP per minute
     desc: 'Maximum number of requests allowed per IP within the time window',
   }),
 });

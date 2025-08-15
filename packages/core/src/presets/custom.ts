@@ -37,6 +37,24 @@ export class CustomPreset extends Preset {
         type: 'boolean',
       },
       {
+        id: 'resultPassthrough',
+        name: 'Result Passthrough',
+        description:
+          'If enabled, all results from this addon will never be filtered out and always included in the final stream list.',
+        type: 'boolean',
+        required: false,
+        default: false,
+      },
+      {
+        id: 'forceToTop',
+        name: 'Force to Top',
+        description:
+          'Whether to force results from this addon to be pushed to the top of the stream list.',
+        type: 'boolean',
+        required: false,
+        default: false,
+      },
+      {
         id: 'timeout',
         name: 'Timeout',
         description: 'The timeout for this addon',
@@ -81,11 +99,20 @@ export class CustomPreset extends Preset {
     userData: UserData,
     options: Record<string, any>
   ): Promise<Addon[]> {
-    if (!options.manifestUrl.endsWith('/manifest.json')) {
+    let manifestUrl = options.manifestUrl;
+    try {
+      manifestUrl = new URL(manifestUrl);
+    } catch (error) {
       throw new Error(
         `${options.name} has an invalid Manifest URL. It must be a valid link to a manifest.json`
       );
     }
+    if (!manifestUrl.pathname.endsWith('/manifest.json')) {
+      throw new Error(
+        `${options.name} has an invalid Manifest URL. It must be a valid link to a manifest.json`
+      );
+    }
+
     return [this.generateAddon(userData, options)];
   }
 
@@ -100,9 +127,14 @@ export class CustomPreset extends Preset {
       library: options.libraryAddon ?? false,
       resources: options.resources || undefined,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       streamPassthrough: options.streamPassthrough ?? false,
+      resultPassthrough: options.resultPassthrough ?? false,
+      forceToTop: options.forceToTop ?? false,
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

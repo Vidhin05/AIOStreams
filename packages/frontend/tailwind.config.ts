@@ -3,10 +3,10 @@ import type { Config } from 'tailwindcss';
 const config: Config = {
   darkMode: 'class',
   content: [
-    './src/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/app/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/components/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/**/*.{ts,tsx,mdx}',
+    './src/app/**/*.{ts,tsx,mdx}',
+    './src/pages/**/*.{ts,tsx,mdx}',
+    './src/components/**/*.{ts,tsx,mdx}',
   ],
   safelist: [
     'bg-amber-900',
@@ -402,7 +402,7 @@ const config: Config = {
           800: 'rgb(var(--color-brand-800) / <alpha-value>)',
           900: 'rgb(var(--color-brand-900) / <alpha-value>)',
           950: 'rgb(var(--color-brand-950) / <alpha-value>)',
-          DEFAULT: 'rgb(var(--color-brand-default) / <alpha-value>)',
+          DEFAULT: 'rgb(var(--color-brand-500) / <alpha-value>)',
         },
         gray: {
           50: 'rgb(var(--color-gray-50) / <alpha-value>)',
@@ -452,9 +452,15 @@ const config: Config = {
     require('tailwind-scrollbar-hide'),
     require('tailwindcss-animate'),
     addVariablesForColors,
+    function ({
+      addVariant,
+    }: {
+      addVariant: (variant: string, selector: string) => void;
+    }) {
+      addVariant('firefox', ':-moz-any(&)');
+    },
   ],
-} satisfies Config;
-
+};
 export default config;
 
 function addVariablesForColors({ addBase, theme }: any) {

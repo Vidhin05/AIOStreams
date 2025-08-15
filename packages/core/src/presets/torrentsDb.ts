@@ -115,7 +115,7 @@ export class TorrentsDbPreset extends Preset {
     const supportedServices: ServiceId[] = [
       constants.REALDEBRID_SERVICE,
       constants.PREMIUMIZE_SERVICE,
-      constants.ALLEDEBRID_SERVICE,
+      constants.ALLDEBRID_SERVICE,
       constants.TORBOX_SERVICE,
       constants.EASYDEBRID_SERVICE,
       constants.PUTIO_SERVICE,
@@ -259,8 +259,11 @@ export class TorrentsDbPreset extends Preset {
       enabled: true,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
@@ -311,8 +314,8 @@ export class TorrentsDbPreset extends Preset {
       offcloud: services.includes(constants.OFFCLOUD_SERVICE)
         ? this.getServiceCredential(constants.OFFCLOUD_SERVICE, userData)
         : undefined,
-      alldebrid: services.includes(constants.ALLEDEBRID_SERVICE)
-        ? this.getServiceCredential(constants.ALLEDEBRID_SERVICE, userData)
+      alldebrid: services.includes(constants.ALLDEBRID_SERVICE)
+        ? this.getServiceCredential(constants.ALLDEBRID_SERVICE, userData)
         : undefined,
       easydebrid: services.includes(constants.EASYDEBRID_SERVICE)
         ? this.getServiceCredential(constants.EASYDEBRID_SERVICE, userData)

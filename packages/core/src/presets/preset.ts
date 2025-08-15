@@ -54,6 +54,7 @@ export const baseOptions = (
     constraints: {
       min: Env.MIN_TIMEOUT,
       max: Env.MAX_TIMEOUT,
+      forceInUi: false, // large ranges don't work well
     },
   },
   {
@@ -80,6 +81,14 @@ export const baseOptions = (
   },
 ];
 
+export interface CacheKeyRequestOptions {
+  resource: Resource | 'manifest';
+  type: string;
+  id: string;
+  options: Record<string, any>;
+  extras?: string;
+}
+
 export abstract class Preset {
   static get METADATA(): PresetMetadata {
     throw new Error('METADATA must be implemented by derived classes');
@@ -87,6 +96,10 @@ export abstract class Preset {
 
   static getParser(): typeof StreamParser {
     return StreamParser;
+  }
+
+  static getCacheKey(options: CacheKeyRequestOptions): string | undefined {
+    return undefined;
   }
 
   /**

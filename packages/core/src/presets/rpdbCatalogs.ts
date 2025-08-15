@@ -1,5 +1,5 @@
 import { Addon, Option, UserData } from '../db';
-import { Preset, baseOptions } from './preset';
+import { CacheKeyRequestOptions, Preset, baseOptions } from './preset';
 import { constants, Env } from '../utils';
 
 export class RpdbCatalogsPreset extends Preset {
@@ -77,11 +77,35 @@ export class RpdbCatalogsPreset extends Preset {
       library: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },
     };
+  }
+
+  static override getCacheKey(
+    options: CacheKeyRequestOptions
+  ): string | undefined {
+    const { resource, type, id, options: presetOptions, extras } = options;
+    try {
+      if (new URL(presetOptions.url).pathname.endsWith('/manifest.json')) {
+        return undefined;
+      }
+      if (new URL(presetOptions.url).origin !== this.METADATA.URL) {
+        return undefined;
+      }
+    } catch {}
+    let cacheKey = `${this.METADATA.ID}-${type}-${id}-${extras}`;
+    if (resource === 'manifest') {
+      cacheKey += `-${presetOptions.catalogs.sort((a: string, b: string) =>
+        a.localeCompare(b)
+      )}`;
+    }
+    return cacheKey;
   }
 }

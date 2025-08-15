@@ -33,6 +33,7 @@ export abstract class BaseProxy {
       enabled: config.enabled ?? false,
       id: config.id,
       url: config.url,
+      publicUrl: config.publicUrl,
       credentials: config.credentials,
       publicIp: config.publicIp,
       proxiedAddons: config.proxiedAddons,
@@ -122,32 +123,36 @@ export abstract class BaseProxy {
 
     try {
       let urls = await this.generateStreamUrls(streams);
-      if (
-        urls &&
-        (Env.FORCE_PUBLIC_PROXY_HOST !== undefined ||
-          Env.FORCE_PUBLIC_PROXY_PORT !== undefined ||
-          Env.FORCE_PUBLIC_PROXY_PROTOCOL !== undefined)
-      ) {
+      const publicUrl = this.config.publicUrl;
+      if (publicUrl && urls) {
+        const publicUrlObj = new URL(publicUrl);
+        const publicBasePath = publicUrlObj.pathname.replace(/\/+$/, ''); // remove trailing slash
         urls = urls.map((url) => {
-          // modify the URL according to settings, needed when using a local URL for requests but a public stream URL is needed.
           const urlObj = new URL(url);
 
-          if (Env.FORCE_PUBLIC_PROXY_PROTOCOL !== undefined) {
-            urlObj.protocol = Env.FORCE_PUBLIC_PROXY_PROTOCOL;
-          }
-          if (Env.FORCE_PUBLIC_PROXY_PORT !== undefined) {
-            urlObj.port = Env.FORCE_PUBLIC_PROXY_PORT.toString();
-          }
-          if (Env.FORCE_PUBLIC_PROXY_HOST !== undefined) {
-            urlObj.hostname = Env.FORCE_PUBLIC_PROXY_HOST;
-          }
+          // Set protocol, hostname, and port from publicUrl
+          urlObj.protocol = publicUrlObj.protocol;
+          urlObj.hostname = publicUrlObj.hostname;
+          urlObj.port = publicUrlObj.port;
+
+          // Adjust pathname: join publicUrl's base path with the original path, avoiding duplicate slashes
+          const origPath = urlObj.pathname.replace(/^\/+/, ''); // remove leading slash
+          urlObj.pathname = publicBasePath
+            ? `${publicBasePath}/${origPath}`.replace(/\/{2,}/g, '/')
+            : `/${origPath}`;
+
           return urlObj.toString();
         });
       }
       return urls;
     } catch (error) {
       logger.error(
-        `Failed to generate proxy URLs: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to generate proxy URLs: ${error instanceof Error ? error : String(error)}`,
+        error instanceof Error
+          ? Object.fromEntries(
+              Object.entries(error).filter(([key]) => key !== 'stack')
+            )
+          : undefined
       );
       return null;
     }

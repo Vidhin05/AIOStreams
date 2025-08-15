@@ -40,8 +40,22 @@ import { ArgentinaTVPreset } from './argentinaTv';
 import { OpenSubtitlesV3PlusPreset } from './opensubtitles-v3-plus';
 import { SubSourcePreset } from './subsource';
 import { SubDLPreset } from './subdl';
+import { AISearchPreset } from './aiSearch';
+import { FKStreamPreset } from './fkstream';
+import { AIOSubtitlePreset } from './aiosubtitle';
+import { SubHeroPreset } from './subhero';
+import { StreamAsiaPreset } from './streamasia';
+import { MoreLikeThisPreset } from './moreLikeThis';
+import { GDriveAPI } from '../builtins/gdrive';
+import { GDrivePreset } from './gdrive';
+import { ContentDeepDivePreset } from './contentDeepDive';
+import { AICompanionPreset } from './aiCompanion';
+import { GoogleOAuth } from '../builtins/gdrive/api';
+import { TorBoxSearchPreset } from './torboxSearch';
+import { AStreamPreset } from './aStream';
+import { Env } from '../utils/env';
 
-const PRESET_LIST: string[] = [
+let PRESET_LIST: string[] = [
   'custom',
   'torrentio',
   'comet',
@@ -53,14 +67,21 @@ const PRESET_LIST: string[] = [
   'orion',
   'torrents-db',
   'streamfusion',
+  'fkstream',
   'debridio',
   'torbox',
+  'torbox-search',
   'easynews',
   'easynewsPlus',
   'easynewsPlusPlus',
   'dmm-cast',
   'nuvio-streams',
   'webstreamr',
+  'astream',
+  'streamasia',
+  Env.BUILTIN_GDRIVE_CLIENT_ID && Env.BUILTIN_GDRIVE_CLIENT_SECRET
+    ? 'stremio-gdrive'
+    : '',
   'usa-tv',
   'argentina-tv',
   'debridio-tv',
@@ -82,13 +103,19 @@ const PRESET_LIST: string[] = [
   'opensubtitles-v3-plus',
   'subsource',
   'subdl',
+  'subhero',
+  'aiosubtitle',
+  'ai-companion',
+  'ai-search',
+  'more-like-this',
+  'content-deep-dive',
   'aiostreams',
-];
+].filter(Boolean);
 
 export class PresetManager {
   static getPresetList(): PresetMinimalMetadata[] {
     return PRESET_LIST.map((presetId) => this.fromId(presetId).METADATA).map(
-      (metadata) => ({
+      (metadata: PresetMetadata) => ({
         ID: metadata.ID,
         NAME: metadata.NAME,
         LOGO: metadata.LOGO,
@@ -98,6 +125,7 @@ export class PresetManager {
         SUPPORTED_STREAM_TYPES: metadata.SUPPORTED_STREAM_TYPES,
         SUPPORTED_SERVICES: metadata.SUPPORTED_SERVICES,
         OPTIONS: metadata.OPTIONS,
+        BUILTIN: metadata.BUILTIN,
       })
     );
   }
@@ -150,12 +178,16 @@ export class PresetManager {
         return OrionPreset;
       case 'streamfusion':
         return StreamFusionPreset;
+      case 'fkstream':
+        return FKStreamPreset;
       case 'anime-kitsu':
         return AnimeKitsuPreset;
       case 'nuvio-streams':
         return NuvioStreamsPreset;
       case 'webstreamr':
         return WebStreamrPreset;
+      case 'astream':
+        return AStreamPreset;
       case 'streaming-catalogs':
         return StreamingCatalogsPreset;
       case 'anime-catalogs':
@@ -186,6 +218,24 @@ export class PresetManager {
         return SubSourcePreset;
       case 'subdl':
         return SubDLPreset;
+      case 'ai-search':
+        return AISearchPreset;
+      case 'aiosubtitle':
+        return AIOSubtitlePreset;
+      case 'subhero':
+        return SubHeroPreset;
+      case 'streamasia':
+        return StreamAsiaPreset;
+      case 'more-like-this':
+        return MoreLikeThisPreset;
+      case 'content-deep-dive':
+        return ContentDeepDivePreset;
+      case 'ai-companion':
+        return AICompanionPreset;
+      case 'stremio-gdrive':
+        return GDrivePreset;
+      case 'torbox-search':
+        return TorBoxSearchPreset;
       default:
         throw new Error(`Preset ${id} not found`);
     }

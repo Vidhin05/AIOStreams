@@ -13,9 +13,14 @@ class StreamSorter {
   }
 
   public async sort(
-    streams: ParsedStream[],
+    allStreams: ParsedStream[],
     type: string
   ): Promise<ParsedStream[]> {
+    const forcedToTopStreams = allStreams.filter(
+      (stream) => stream.addon.forceToTop
+    );
+    const streams = allStreams.filter((stream) => !stream.addon.forceToTop);
+
     let primarySortCriteria = this.userData.sortCriteria.global;
     let cachedSortCriteria = this.userData.sortCriteria.cached;
     let uncachedSortCriteria = this.userData.sortCriteria.uncached;
@@ -119,9 +124,13 @@ class StreamSorter {
     }
 
     logger.info(
-      `Sorted ${sortedStreams.length} streams in ${getTimeTakenSincePoint(start)}`
+      `Sorted ${sortedStreams.length}${
+        forcedToTopStreams.length > 0
+          ? ` + ${forcedToTopStreams.length} forced to top`
+          : ''
+      } streams in ${getTimeTakenSincePoint(start)}`
     );
-    return sortedStreams;
+    return [...forcedToTopStreams, ...sortedStreams];
   }
 
   private dynamicSortKey(
@@ -159,7 +168,7 @@ class StreamSorter {
           }
 
           const idx = userData.presets.findIndex(
-            (p) => p.instanceId === stream.addon.presetInstanceId
+            (p) => p.instanceId === stream.addon.preset.id
           );
           return multiplier * -(idx === -1 ? Infinity : idx);
 

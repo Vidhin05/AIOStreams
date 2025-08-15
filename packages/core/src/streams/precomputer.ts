@@ -19,8 +19,12 @@ class StreamPrecomputer {
 
   public async precompute(streams: ParsedStream[]) {
     const preferredRegexPatterns =
-      FeatureControl.isRegexAllowed(this.userData) &&
-      this.userData.preferredRegexPatterns
+      FeatureControl.isRegexAllowed(
+        this.userData,
+        this.userData.preferredRegexPatterns?.map(
+          (pattern) => pattern.pattern
+        ) ?? []
+      ) && this.userData.preferredRegexPatterns
         ? await Promise.all(
             this.userData.preferredRegexPatterns.map(async (pattern) => {
               return {

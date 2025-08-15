@@ -159,6 +159,11 @@ jobs:
                     "inline": false
                   },
                   {
+                    "name": "📝 View Release Notes",
+                    "value": "[GitHub](https://github.com/Viren070/AIOStreams/releases/tag/${{ inputs.ref }})",
+                    "inline": false
+                  },
+                  {
                     "name": "🔗 View Build",
                     "value": "[GitHub Actions](https://github.com/Viren070/aiostreams/actions/runs/${{ github.run_id }})",
                     "inline": false

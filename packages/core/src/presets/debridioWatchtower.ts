@@ -23,30 +23,27 @@ class DebridioWatchtowerStreamParser extends StreamParser {
 
     stream.description = stream.description || stream.title;
 
-    parsedStream.filename = this.getFilename(stream, parsedStream);
-
     parsedStream.type = 'http';
+    let resolution = (stream as any).resolution;
+    resolution = typeof resolution === 'string' ? resolution : undefined;
+    parsedStream.parsedFile = FileParser.parse(resolution);
+    parsedStream.parsedFile = {
+      resolution: parsedStream.parsedFile.resolution,
+      languages: [],
+      audioChannels: [],
+      visualTags: [],
+      audioTags: [],
+    };
+    parsedStream.parsedFile.languages = Array.from(
+      new Set([
+        ...parsedStream.parsedFile.languages,
+        ...this.getLanguages(stream, parsedStream),
+      ])
+    );
 
-    if (parsedStream.filename) {
-      parsedStream.parsedFile = FileParser.parse(parsedStream.filename);
-      parsedStream.parsedFile = {
-        resolution: parsedStream.parsedFile.resolution,
-        languages: [],
-        audioChannels: [],
-        visualTags: [],
-        audioTags: [],
-      };
-      parsedStream.parsedFile.languages = Array.from(
-        new Set([
-          ...parsedStream.parsedFile.languages,
-          ...this.getLanguages(stream, parsedStream),
-        ])
-      );
-    }
-    parsedStream.filename = stream.behaviorHints?.filename ?? undefined;
-    parsedStream.folderName = undefined;
-
-    parsedStream.message = stream.description?.replace(/\d+p?/g, '');
+    parsedStream.indexer = stream.name
+      ? (stream.name?.split('\n')?.[0]?.match(/\[([^\]]+)\]/)?.[1] ?? undefined)
+      : undefined;
 
     return parsedStream;
   }
@@ -136,8 +133,11 @@ export class DebridioWatchtowerPreset extends Preset {
       library: false,
       resources: options.resources || this.METADATA.SUPPORTED_RESOURCES,
       timeout: options.timeout || this.METADATA.TIMEOUT,
-      presetType: this.METADATA.ID,
-      presetInstanceId: '',
+      preset: {
+        id: '',
+        type: this.METADATA.ID,
+        options: options,
+      },
       headers: {
         'User-Agent': this.METADATA.USER_AGENT,
       },

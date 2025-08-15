@@ -18,7 +18,7 @@ router.get('/:alias/*', (req: Request<AliasParams>, res) => {
 
   const configuration = Env.ALIASED_CONFIGURATIONS[alias];
   if (!configuration || !configuration.uuid || !configuration.password) {
-    throw new APIError(constants.ErrorCode.USER_NOT_FOUND);
+    throw new APIError(constants.ErrorCode.USER_INVALID_DETAILS);
   }
 
   const redirectPath = `/stremio/${configuration.uuid}/${configuration.password}${wildcardPath ? `/${wildcardPath}` : ''}`;

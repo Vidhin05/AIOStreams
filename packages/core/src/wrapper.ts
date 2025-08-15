@@ -9,6 +9,7 @@ import {
   Manifest,
   ManifestSchema,
   Meta,
+  ParsedMeta,
   MetaPreview,
   MetaPreviewSchema,
   MetaResponse,
@@ -24,6 +25,7 @@ import {
   SubtitleResponse,
   SubtitleResponseSchema,
   SubtitleSchema,
+  ParsedMetaSchema,
 } from './db/schemas';
 import {
   Cache,
@@ -35,15 +37,39 @@ import {
   formatZodError,
   PossibleRecursiveRequestError,
   Env,
+  getTimeTakenSincePoint,
+  RequestOptions,
 } from './utils';
-import { PresetManager } from './presets';
+import { Preset, PresetManager } from './presets';
 import { StreamParser } from './parser';
 import { z } from 'zod';
 
 const logger = createLogger('wrappers');
-// const cache = Cache.getInstance<string, any>('wrappers');
-const manifestCache = Cache.getInstance<string, Manifest>('manifest');
-const resourceCache = Cache.getInstance<string, any>('resources');
+
+const manifestCache = Cache.getInstance<string, Manifest>(
+  'manifest',
+  Env.MANIFEST_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
+const catalogCache = Cache.getInstance<string, MetaPreview[]>(
+  'catalog',
+  Env.CATALOG_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
+const metaCache = Cache.getInstance<string, Meta>(
+  'meta',
+  Env.META_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
+const subtitlesCache = Cache.getInstance<string, Subtitle[]>(
+  'subtitles',
+  Env.SUBTITLE_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
+const addonCatalogCache = Cache.getInstance<string, AddonCatalog[]>(
+  'addon_catalog',
+  Env.ADDON_CATALOG_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
+const streamsCache = Cache.getInstance<string, ParsedStream[]>(
+  'streams',
+  Env.STREAM_CACHE_MAX_SIZE || Env.DEFAULT_MAX_CACHE_SIZE
+);
 
 const RESOURCE_TTL = 5 * 60;
 
@@ -57,11 +83,13 @@ export class Wrapper {
   private readonly baseUrl: string;
   private readonly addon: Addon;
   private readonly manifestUrl: string;
+  private readonly preset: typeof Preset;
 
   constructor(addon: Addon) {
     this.addon = addon;
     this.manifestUrl = this.addon.manifestUrl.replace('stremio://', 'https://');
     this.baseUrl = this.manifestUrl.split('/').slice(0, -1).join('/');
+    this.preset = PresetManager.fromId(this.addon.preset.type);
   }
 
   /**
@@ -113,12 +141,11 @@ export class Wrapper {
           `Fetching manifest for ${this.addon.name} ${this.addon.displayIdentifier || this.addon.identifier} (${makeUrlLogSafe(this.manifestUrl)})`
         );
         try {
-          const res = await makeRequest(
-            this.manifestUrl,
-            Env.MANIFEST_TIMEOUT,
-            this.addon.headers,
-            this.addon.ip
-          );
+          const res = await makeRequest(this.manifestUrl, {
+            timeout: Env.MANIFEST_TIMEOUT,
+            headers: this.addon.headers,
+            forwardIp: this.addon.ip,
+          });
           if (!res.ok) {
             throw new Error(`${res.status} - ${res.statusText}`);
           }
@@ -145,7 +172,12 @@ export class Wrapper {
           );
         }
       },
-      this.manifestUrl,
+      this.preset.getCacheKey({
+        resource: 'manifest',
+        type: 'manifest',
+        id: 'manifest',
+        options: this.addon.preset.options,
+      }) || this.manifestUrl,
       Env.MANIFEST_CACHE_TTL
     );
   }
@@ -160,16 +192,24 @@ export class Wrapper {
       { type, id },
       this.addon.timeout,
       validator,
-      Env.STREAM_CACHE_TTL != -1,
-      Env.STREAM_CACHE_TTL
+      Env.STREAM_CACHE_TTL != -1 ? streamsCache : undefined,
+      Env.STREAM_CACHE_TTL,
+      this.preset.getCacheKey({
+        resource: 'stream',
+        type,
+        id,
+        options: this.addon.preset.options,
+      })
     );
-    const Parser = this.addon.presetType
-      ? PresetManager.fromId(this.addon.presetType).getParser()
-      : StreamParser;
-    const parser = new Parser(this.addon);
-    return streams
+    const start = Date.now();
+    const parser = new (this.preset.getParser())(this.addon);
+    const parsedStreams = streams
       .flatMap((stream: Stream) => parser.parse(stream))
       .filter((stream: any) => !stream.skip);
+    logger.debug(
+      `Parsed ${parsedStreams.length} streams for ${this.getAddonName(this.addon)} in ${getTimeTakenSincePoint(start)}`
+    );
+    return parsedStreams as ParsedStream[];
   }
 
   async getCatalog(
@@ -186,12 +226,19 @@ export class Wrapper {
       { type, id, extras },
       Env.CATALOG_TIMEOUT,
       validator,
-      Env.CATALOG_CACHE_TTL != -1,
-      Env.CATALOG_CACHE_TTL
+      Env.CATALOG_CACHE_TTL != -1 ? catalogCache : undefined,
+      Env.CATALOG_CACHE_TTL,
+      this.preset.getCacheKey({
+        resource: 'catalog',
+        type,
+        id,
+        options: this.addon.preset.options,
+        extras,
+      })
     );
   }
 
-  async getMeta(type: string, id: string): Promise<Meta> {
+  async getMeta(type: string, id: string): Promise<ParsedMeta> {
     const validator = (data: any): Meta => {
       const parsed = MetaSchema.safeParse(data.meta);
       if (!parsed.success) {
@@ -207,10 +254,29 @@ export class Wrapper {
       { type, id },
       Env.META_TIMEOUT,
       validator,
-      Env.META_CACHE_TTL != -1,
-      Env.META_CACHE_TTL
+      Env.META_CACHE_TTL != -1 ? metaCache : undefined,
+      Env.META_CACHE_TTL,
+      this.preset.getCacheKey({
+        resource: 'meta',
+        type,
+        id,
+        options: this.addon.preset.options,
+      })
     );
-    return meta;
+    // parse streams in meta.videos.streams if present
+    const parser = new (this.preset.getParser())(this.addon);
+    if (meta.videos) {
+      meta.videos = meta.videos.map((video) => {
+        const parsedStreams = video.streams
+          ?.map((stream) => parser.parse(stream))
+          .filter((stream) => ('skip' in stream ? !stream.skip : true));
+        if (parsedStreams) {
+          video.streams = parsedStreams as ParsedStream[];
+        }
+        return video;
+      });
+    }
+    return ParsedMetaSchema.parse(meta);
   }
 
   async getSubtitles(
@@ -227,8 +293,14 @@ export class Wrapper {
       { type, id, extras },
       this.addon.timeout,
       validator,
-      Env.SUBTITLE_CACHE_TTL != -1,
-      Env.SUBTITLE_CACHE_TTL
+      Env.SUBTITLE_CACHE_TTL != -1 ? subtitlesCache : undefined,
+      Env.SUBTITLE_CACHE_TTL,
+      this.preset.getCacheKey({
+        resource: 'subtitles',
+        type,
+        id,
+        options: this.addon.preset.options,
+      })
     );
   }
 
@@ -246,13 +318,23 @@ export class Wrapper {
       { type, id },
       Env.CATALOG_TIMEOUT,
       validator,
-      Env.ADDON_CATALOG_CACHE_TTL != -1,
-      Env.ADDON_CATALOG_CACHE_TTL
+      Env.ADDON_CATALOG_CACHE_TTL != -1 ? addonCatalogCache : undefined,
+      Env.ADDON_CATALOG_CACHE_TTL,
+      this.preset.getCacheKey({
+        resource: 'addon_catalog',
+        type,
+        id,
+        options: this.addon.preset.options,
+      })
     );
   }
 
-  async makeRequest(url: string, timeout: number = this.addon.timeout) {
-    return await makeRequest(url, timeout, this.addon.headers, this.addon.ip);
+  async makeRequest(url: string, options: RequestOptions) {
+    return await makeRequest(url, {
+      headers: this.addon.headers,
+      forwardIp: this.addon.ip,
+      ...options,
+    });
   }
 
   private async makeResourceRequest<T>(
@@ -260,13 +342,15 @@ export class Wrapper {
     params: ResourceParams,
     timeout: number,
     validator: (data: unknown) => T,
-    cache: boolean = false,
-    cacheTtl: number = RESOURCE_TTL
+    cacher: Cache<string, T> | undefined,
+    cacheTtl: number = RESOURCE_TTL,
+    cacheKey?: string
   ) {
     const { type, id, extras } = params;
     const url = this.buildResourceUrl(resource, type, id, extras);
-    if (cache) {
-      const cached = resourceCache.get(url);
+    if (cacher) {
+      const cached = cacher.get(cacheKey || url);
+
       if (cached) {
         logger.info(
           `Returning cached ${resource} for ${this.getAddonName(this.addon)} (${makeUrlLogSafe(url)})`
@@ -275,15 +359,17 @@ export class Wrapper {
       }
     }
     logger.info(
-      `Fetching ${resource} of type ${type} with id ${id} and extras ${extras} (${makeUrlLogSafe(url)})`
+      `Fetching ${resource} of type ${type} with id ${id} and extras ${extras} (${makeUrlLogSafe(url)})`,
+      {
+        cacheKey: cacheKey ? makeUrlLogSafe(cacheKey) : undefined,
+      }
     );
     try {
-      const res = await makeRequest(
-        url,
-        timeout,
-        this.addon.headers,
-        this.addon.ip
-      );
+      const res = await makeRequest(url, {
+        timeout: timeout,
+        headers: this.addon.headers,
+        forwardIp: this.addon.ip,
+      });
       if (!res.ok) {
         logger.error(
           `Failed to fetch ${resource} resource for ${this.getAddonName(this.addon)}: ${res.status} - ${res.statusText}`
@@ -295,8 +381,8 @@ export class Wrapper {
 
       const validated = validator(data);
 
-      if (cache) {
-        resourceCache.set(url, validated, cacheTtl);
+      if (cacher) {
+        cacher.set(cacheKey || url, validated, cacheTtl);
       }
       return validated;
     } catch (error: any) {

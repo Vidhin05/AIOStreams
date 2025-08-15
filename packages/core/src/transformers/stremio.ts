@@ -15,6 +15,7 @@ import {
   MetaResponse,
   CatalogResponse,
   StreamResponse,
+  ParsedMeta,
 } from '../db';
 import { createFormatter } from '../formatters';
 import { AIOStreamsError, AIOStreamsResponse } from '../main';
@@ -40,6 +41,88 @@ export class StremioTransformer {
       return true;
     }
     return false;
+  }
+
+  private async convertParsedStreamToStream(
+    stream: ParsedStream,
+    formatter: {
+      format: (stream: ParsedStream) => { name: string; description: string };
+    }
+  ): Promise<AIOStream> {
+    const { name, description } = stream.addon.streamPassthrough
+      ? {
+          name: stream.originalName || stream.addon.name,
+          description: stream.originalDescription,
+        }
+      : formatter.format(stream);
+    const identifyingAttributes = [
+      Env.ADDON_ID,
+      stream.service?.id,
+      stream.proxied,
+      stream.parsedFile?.resolution,
+      stream.parsedFile?.quality,
+      stream.parsedFile?.encode,
+      stream.parsedFile?.audioTags.length
+        ? stream.parsedFile?.audioTags
+        : undefined,
+      stream.parsedFile?.visualTags.length
+        ? stream.parsedFile?.visualTags
+        : undefined,
+      stream.parsedFile?.languages.length
+        ? stream.parsedFile?.languages
+        : undefined,
+      stream.parsedFile?.releaseGroup,
+    ].filter(Boolean);
+    const bingeGroup = `${identifyingAttributes.join('|')}`;
+    return {
+      name,
+      description,
+      url: ['http', 'usenet', 'debrid', 'live'].includes(stream.type)
+        ? stream.url
+        : undefined,
+      infoHash: stream.type === 'p2p' ? stream.torrent?.infoHash : undefined,
+      fileIdx: stream.type === 'p2p' ? stream.torrent?.fileIdx : undefined,
+      ytId: stream.type === 'youtube' ? stream.ytId : undefined,
+      externalUrl: stream.type === 'external' ? stream.externalUrl : undefined,
+      sources: stream.type === 'p2p' ? stream.torrent?.sources : undefined,
+      subtitles: stream.subtitles,
+      behaviorHints: {
+        countryWhitelist: stream.countryWhitelist,
+        notWebReady: stream.notWebReady,
+        bingeGroup: bingeGroup,
+        proxyHeaders:
+          stream.requestHeaders || stream.responseHeaders
+            ? {
+                request: stream.requestHeaders,
+                response: stream.responseHeaders,
+              }
+            : undefined,
+        videoHash: stream.videoHash,
+        videoSize: stream.size,
+        filename: stream.filename,
+      },
+      streamData: {
+        type: stream.type,
+        proxied: stream.proxied,
+        indexer: stream.indexer,
+        age: stream.age,
+        duration: stream.duration,
+        library: stream.library,
+        size: stream.size,
+        folderSize: stream.folderSize,
+        torrent: stream.torrent,
+        addon: stream.addon.name,
+        filename: stream.filename,
+        folderName: stream.folderName,
+        service: stream.service,
+        parsedFile: stream.parsedFile,
+        message: stream.message,
+        regexMatches: (stream as any).regexMatches,
+        regexTotalScore: (stream as any).regexTotalScore,
+        keywordMatched: stream.keywordMatched,
+        id: stream.id,
+      },
+    };
   }
 
   async transformStreams(
@@ -79,88 +162,9 @@ export class StremioTransformer {
     );
 
     transformedStreams = await Promise.all(
-      streams.map(async (stream: ParsedStream): Promise<AIOStream> => {
-        const { name, description } = stream.addon.streamPassthrough
-          ? {
-              name: stream.originalName,
-              description: stream.originalDescription,
-            }
-          : formatter.format(stream);
-        const identifyingAttributes = [
-          Env.ADDON_ID,
-          stream.addon.name,
-          stream.service?.id,
-          stream.library,
-          stream.proxied,
-          stream.parsedFile?.resolution,
-          stream.parsedFile?.quality,
-          stream.parsedFile?.encode,
-          stream.parsedFile?.audioTags.length
-            ? stream.parsedFile?.audioTags
-            : undefined,
-          stream.parsedFile?.visualTags.length
-            ? stream.parsedFile?.visualTags
-            : undefined,
-          stream.parsedFile?.languages.length
-            ? stream.parsedFile?.languages
-            : undefined,
-          stream.parsedFile?.releaseGroup,
-          stream.indexer,
-        ].filter(Boolean);
-        const bingeGroup = `${identifyingAttributes.join('|')}`;
-        return {
-          name,
-          description,
-          url: ['http', 'usenet', 'debrid', 'live'].includes(stream.type)
-            ? stream.url
-            : undefined,
-          infoHash:
-            stream.type === 'p2p' ? stream.torrent?.infoHash : undefined,
-          fileIdx: stream.type === 'p2p' ? stream.torrent?.fileIdx : undefined,
-          ytId: stream.type === 'youtube' ? stream.ytId : undefined,
-          externalUrl:
-            stream.type === 'external' ? stream.externalUrl : undefined,
-          sources: stream.type === 'p2p' ? stream.torrent?.sources : undefined,
-          subtitles: stream.subtitles,
-          behaviorHints: {
-            countryWhitelist: stream.countryWhitelist,
-            notWebReady: stream.notWebReady,
-            bingeGroup: bingeGroup,
-            proxyHeaders:
-              stream.requestHeaders || stream.responseHeaders
-                ? {
-                    request: stream.requestHeaders,
-                    response: stream.responseHeaders,
-                  }
-                : undefined,
-            videoHash: stream.videoHash,
-            videoSize: stream.size,
-            filename: stream.filename,
-          },
-          streamData: {
-            type: stream.type,
-            proxied: stream.proxied,
-            indexer: stream.indexer,
-            age: stream.age,
-            duration: stream.duration,
-            library: stream.library,
-            size: stream.size,
-            folderSize: stream.folderSize,
-            torrent: stream.torrent,
-            addon: stream.addon.name,
-            filename: stream.filename,
-            folderName: stream.folderName,
-            service: stream.service,
-            parsedFile: stream.parsedFile,
-            message: stream.message,
-            regexMatched: stream.regexMatched,
-            regexMatches: stream.regexMatches,
-            regexTotalScore: stream.regexTotalScore,
-            keywordMatched: stream.keywordMatched,
-            id: stream.id,
-          },
-        };
-      })
+      streams.map((stream: ParsedStream) =>
+        this.convertParsedStreamToStream(stream, formatter)
+      )
     );
 
     // add errors to the end (if this.userData.hideErrors is false  or the resource is not in this.userData.hideErrorsForResources)
@@ -176,16 +180,20 @@ export class StremioTransformer {
     }
 
     if (this.userData.showStatistics) {
-      transformedStreams.push(
-        ...statistics.map((statistic) => ({
-          name: statistic.title,
-          description: statistic.description,
-          externalUrl: 'https://github.com/Viren070/AIOStreams',
-          streamData: {
-            type: constants.STATISTIC_STREAM_TYPE,
-          },
-        }))
-      );
+      let position = this.userData.statisticsPosition || 'bottom';
+      let statisticStreams = statistics.map((statistic) => ({
+        name: statistic.title,
+        description: statistic.description,
+        externalUrl: 'https://github.com/Viren070/AIOStreams',
+        streamData: {
+          type: constants.STATISTIC_STREAM_TYPE,
+        },
+      }));
+      if (position === 'bottom') {
+        transformedStreams.push(...statisticStreams);
+      } else {
+        transformedStreams.unshift(...statisticStreams);
+      }
     }
 
     return {
@@ -235,9 +243,9 @@ export class StremioTransformer {
     };
   }
 
-  transformMeta(
-    response: AIOStreamsResponse<Meta | null>
-  ): MetaResponse | null {
+  async transformMeta(
+    response: AIOStreamsResponse<ParsedMeta | null>
+  ): Promise<MetaResponse | null> {
     const { data: meta, errors } = response;
 
     if (!meta && errors.length === 0) {
@@ -252,6 +260,47 @@ export class StremioTransformer {
         }),
       };
     }
+
+    // Create formatter for stream conversion if needed
+    let formatter: {
+      format: (stream: ParsedStream) => { name: string; description: string };
+    } | null = null;
+    if (
+      meta.videos?.some((video) => video.streams && video.streams.length > 0)
+    ) {
+      if (this.userData.formatter.id === constants.CUSTOM_FORMATTER) {
+        const template = this.userData.formatter.definition;
+        if (!template) {
+          throw new Error('No template defined for custom formatter');
+        }
+        formatter = createFormatter(
+          this.userData.formatter.id,
+          template,
+          this.userData.addonName
+        );
+      } else {
+        formatter = createFormatter(
+          this.userData.formatter.id,
+          undefined,
+          this.userData.addonName
+        );
+      }
+    }
+
+    // Transform streams in videos if present
+    if (meta.videos && formatter) {
+      for (const video of meta.videos) {
+        if (video.streams && video.streams.length > 0) {
+          const transformedStreams = await Promise.all(
+            video.streams.map((stream) =>
+              this.convertParsedStreamToStream(stream, formatter!)
+            )
+          );
+          video.streams = transformedStreams as unknown as ParsedStream[];
+        }
+      }
+    }
+
     return {
       meta,
     };
@@ -315,7 +364,7 @@ export class StremioTransformer {
       errorDescription = 'Unknown error',
     } = options;
     return {
-      id: `error.${errorTitle}`,
+      id: `aiostreamserror.${encodeURIComponent(JSON.stringify(options))}`,
       name: errorTitle,
       description: errorDescription,
       type: 'movie',

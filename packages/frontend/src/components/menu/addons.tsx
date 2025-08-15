@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { PageWrapper } from '../shared/page-wrapper';
 import { useStatus } from '@/context/status';
 import { useUserData } from '@/context/userData';
@@ -544,6 +544,9 @@ function SortableAddonItem({
 }) {
   const { userData, setUserData } = useUserData();
   const [isConfigurable, setIsConfigurable] = useState(false);
+  const [logo, setLogo] = useState<string | undefined>(
+    preset.logo || presetMetadata.LOGO
+  );
   const [step, setStep] = useState(1);
   // const [configModalOpen, setConfigModalOpen] = useState(false);
   const configModalOpen = useDisclosure(false);
@@ -565,6 +568,10 @@ function SortableAddonItem({
     opacity: isDragging ? 0.5 : 1,
   };
 
+  const standardiseManifestUrl = (url: string) => {
+    return url.replace(/^stremio:\/\//, 'https://').replace(/\/$/, '');
+  };
+
   useEffect(() => {
     if (configModalOpen.isOpen) {
       setStep(1);
@@ -575,13 +582,11 @@ function SortableAddonItem({
     let active = true;
 
     if (presetMetadata.ID === 'custom' && preset.options.manifestUrl) {
-      const manifestUrl = preset.options.manifestUrl.replace(
-        /^stremio:\/\//,
-        'https://'
-      );
+      const manifestUrl = standardiseManifestUrl(preset.options.manifestUrl);
       const cached = manifestCache.get(manifestUrl);
       if (cached) {
         setIsConfigurable(cached.behaviorHints?.configurable === true);
+        setLogo(cached.logo);
         return; // Don't fetch again
       }
 
@@ -591,6 +596,7 @@ function SortableAddonItem({
           manifestCache.set(manifestUrl, manifest);
           if (active) {
             setIsConfigurable(manifest?.behaviorHints?.configurable === true);
+            setLogo(manifest?.logo);
           }
         })
         .catch(() => {
@@ -605,13 +611,14 @@ function SortableAddonItem({
 
   const handleManifestUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
+    const standardisedManifest = standardiseManifestUrl(newManifestUrl);
     if (!newManifestUrl) {
       toast.error('Please enter a new manifest URL');
       return;
     }
 
     const regex = /^(https?|stremio):\/\/.+\/manifest\.json$/;
-    if (!regex.test(newManifestUrl)) {
+    if (!regex.test(standardisedManifest)) {
       toast.error('Please enter a valid manifest URL');
       return;
     }
@@ -619,13 +626,14 @@ function SortableAddonItem({
     // attempt to fetch the manifest
     try {
       setLoading(true);
-      const response = await fetch(newManifestUrl);
+      const response = await fetch(standardisedManifest);
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
       await response.json();
     } catch (error: any) {
       toast.error(`Failed to fetch or parse manifest: ${error.message}`);
+      setLoading(false);
       return;
     }
 
@@ -637,7 +645,7 @@ function SortableAddonItem({
               ...p,
               options: {
                 ...p.options,
-                manifestUrl: newManifestUrl,
+                manifestUrl: standardisedManifest,
               },
             }
           : p
@@ -652,9 +660,10 @@ function SortableAddonItem({
 
   const getConfigureUrl = () => {
     if (!preset.options.manifestUrl) return '';
-    return preset.options.manifestUrl
-      .replace(/^stremio:\/\//, 'https://')
-      .replace(/\/manifest\.json$/, '/configure');
+    return standardiseManifestUrl(preset.options.manifestUrl).replace(
+      /\/manifest\.json$/,
+      '/configure'
+    );
   };
 
   return (
@@ -667,11 +676,11 @@ function SortableAddonItem({
         />
         <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
           <div className="relative flex-shrink-0 h-8 w-8 hidden sm:block">
-            {presetMetadata.ID === 'custom' ? (
-              <PlusIcon className="w-full h-full object-contain" />
+            {!logo ? (
+              <IoExtensionPuzzle className="w-full h-full object-contain" />
             ) : (
               <Image
-                src={presetMetadata.LOGO}
+                src={logo}
                 alt={presetMetadata.NAME}
                 fill
                 className="w-full h-full object-contain rounded-md"
@@ -802,7 +811,13 @@ function AddonCard({
   onAdd: () => void;
 }) {
   return (
-    <div className="flex flex-col min-h-72 h-auto bg-[--background] border border-[--border] rounded-lg shadow-sm p-4 relative">
+    <div className="flex flex-col min-h-72 h-auto bg-[--background] border border-[--border] rounded-lg shadow-sm p-4 relative overflow-hidden">
+      {/* Built-in ribbon */}
+      {preset.BUILTIN && (
+        <div className="absolute -left-[30px] top-[20px] bg-[rgb(var(--color-brand-500))] text-white text-xs font-semibold py-1 w-[120px] text-center transform -rotate-45 shadow-md">
+          Built-in
+        </div>
+      )}
       {/* Top: Logo + Name/Description */}
       <div className="flex gap-4 items-start">
         {preset.ID === 'custom' ? (
@@ -999,6 +1014,7 @@ function AddonModal({
   return (
     <Modal
       open={open}
+      description={<MarkdownLite>{presetMetadata?.DESCRIPTION}</MarkdownLite>}
       onOpenChange={onOpenChange}
       title={
         mode === 'add'
@@ -1211,12 +1227,22 @@ function AddonGroupCard() {
         </a>{' '}
         for a detailed guide to using groups.
       </div>
+      <Switch
+        label="Disable Groups"
+        value={userData.disableGroups ?? false}
+        onValueChange={(value) => {
+          setUserData((prev) => ({ ...prev, disableGroups: value }));
+        }}
+        side="right"
+        help="If enabled, groups will be ignored and all addons will be used."
+      />
       {(userData.groups || []).map((group, index) => (
         <div key={index} className="flex gap-2">
           <div className="flex-1 flex gap-2">
             <div className="flex-1">
               <Combobox
                 multiple
+                disabled={userData.disableGroups}
                 value={group.addons}
                 options={getAvailablePresets(index)}
                 emptyMessage="You haven't installed any addons yet or they are already in a group"
@@ -1230,7 +1256,7 @@ function AddonGroupCard() {
             <div className="flex-1">
               <TextInput
                 value={index === 0 ? 'true' : group.condition}
-                disabled={index === 0}
+                disabled={index === 0 || userData.disableGroups}
                 label="Condition"
                 placeholder="Enter condition"
                 onValueChange={(value) => {
@@ -1242,6 +1268,7 @@ function AddonGroupCard() {
           <IconButton
             size="sm"
             rounded
+            disabled={userData.disableGroups}
             icon={<FaRegTrashAlt />}
             intent="alert-subtle"
             onClick={() => {
@@ -1263,6 +1290,7 @@ function AddonGroupCard() {
           size="sm"
           intent="primary-subtle"
           icon={<FaPlus />}
+          disabled={userData.disableGroups}
           onClick={() => {
             setUserData((prev) => {
               const currentGroups = prev.groups || [];
@@ -1282,7 +1310,7 @@ function CatalogSettingsCard() {
   const { userData, setUserData } = useUserData();
   const [loading, setLoading] = useState(false);
 
-  const fetchCatalogs = async () => {
+  const fetchCatalogs = async (hideToast = false) => {
     setLoading(true);
     try {
       const response = await UserConfigAPI.getCatalogs(userData);
@@ -1341,7 +1369,9 @@ function CatalogSettingsCard() {
             catalogModifications: filteredMods,
           };
         });
-        toast.success('Catalogs fetched successfully');
+        if (!hideToast) {
+          toast.success('Catalogs fetched successfully');
+        }
       } else {
         toast.error(response.error?.message || 'Failed to fetch catalogs');
       }
@@ -1351,6 +1381,11 @@ function CatalogSettingsCard() {
       setLoading(false);
     }
   };
+
+  // Auto-fetch catalogs when component mounts
+  useEffect(() => {
+    fetchCatalogs(true);
+  }, []); // Empty dependency array means this runs once when component mounts
 
   const capitalise = (str: string | undefined) => {
     if (!str) return '';
@@ -1431,51 +1466,29 @@ function CatalogSettingsCard() {
     setIsDragging(true);
   };
 
-  const confirmRefreshCatalogs = useConfirmationDialog({
-    title: 'Refresh Catalogs',
-    description:
-      'Are you sure you want to refresh the catalogs? This will remove any catalogs that are no longer available',
-    onConfirm: () => {
-      fetchCatalogs();
-    },
-  });
-
   return (
-    <div className="rounded-[--radius] border bg-[--paper] shadow-sm p-4">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h3 className="font-semibold text-xl text-[--muted] transition-colors hover:text-[--brand]">
-            Catalogs
-          </h3>
-          <p className="text-[--muted] text-sm">
-            Rename, Reorder, and toggle your catalogs, and apply modifications
-            like RPDB posters and shuffling. If you reorder the addons, you need
-            to reinstall the addon
-          </p>
-        </div>
+    <SettingsCard
+      title="Catalogs"
+      description="Rename, Reorder, and toggle your catalogs, and apply modifications like RPDB posters and shuffling. If you reorder the addons, you need to reinstall the addon"
+      action={
         <IconButton
           size="sm"
           intent="warning-subtle"
           icon={<MdRefresh />}
           rounded
           onClick={() => {
-            if (userData.catalogModifications?.length) {
-              confirmRefreshCatalogs.open();
-            } else {
-              fetchCatalogs();
-            }
+            fetchCatalogs();
           }}
           loading={loading}
         />
-      </div>
-
+      }
+    >
       {!userData.catalogModifications?.length && (
         <p className="text-[--muted] text-base text-center my-8">
           Your addons don't have any catalogs... or you haven't fetched them yet
           :/
         </p>
       )}
-
       {userData.catalogModifications &&
         userData.catalogModifications.length > 0 && (
           <DndContext
@@ -1515,9 +1528,7 @@ function CatalogSettingsCard() {
             </SortableContext>
           </DndContext>
         )}
-
-      <ConfirmationDialog {...confirmRefreshCatalogs} />
-    </div>
+    </SettingsCard>
   );
 }
 

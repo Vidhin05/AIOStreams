@@ -29,7 +29,7 @@ const MarkdownLite: React.FC<MarkdownLiteProps> = ({ children, className }) => {
             return (
               <code
                 key={i}
-                className="bg-muted px-1 py-0.5 rounded text-[--brand] font-mono text-xs"
+                className="bg-muted px-1 py-0.5 rounded text-[--brand] font-mono text-xs break-all"
               >
                 {match.slice(1, -1)}
               </code>

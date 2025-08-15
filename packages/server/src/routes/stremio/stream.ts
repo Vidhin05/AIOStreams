@@ -46,7 +46,8 @@ router.get(
       ];
       if (transformer.showError('stream', errors)) {
         logger.error(
-          `Unexpected error during stream retrieval: ${errorMessage}`
+          `Unexpected error during stream retrieval: ${errorMessage}`,
+          error
         );
         res.status(200).json(
           StremioTransformer.createDynamicError('stream', {

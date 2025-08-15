@@ -22,9 +22,7 @@ router.get(
     }
     const transformer = new StremioTransformer(req.userData);
     try {
-      const { type, id } = req.params;
-      const { videoHash, videoSize } = req.query;
-      const extras = [videoHash, videoSize].filter(Boolean).join(',');
+      const { type, id, extras } = req.params;
 
       res
         .status(200)

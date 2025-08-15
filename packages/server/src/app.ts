@@ -6,6 +6,9 @@ import {
   statusApi,
   formatApi,
   catalogApi,
+  rpdbApi,
+  gdriveApi,
+  debridApi,
 } from './routes/api';
 import {
   configure,
@@ -17,7 +20,7 @@ import {
   addonCatalog,
   alias,
 } from './routes/stremio';
-
+import { gdrive, torboxSearch } from './routes/builtins';
 import {
   ipMiddleware,
   loggerMiddleware,
@@ -25,16 +28,29 @@ import {
   errorMiddleware,
   corsMiddleware,
   staticRateLimiter,
+  internalMiddleware,
 } from './middlewares';
 
 import { constants, createLogger, Env } from '@aiostreams/core';
 import { StremioTransformer } from '@aiostreams/core';
 import { createResponse } from './utils/responses';
 import path from 'path';
+import fs from 'fs';
 const app = express();
 const logger = createLogger('server');
 
 export const frontendRoot = path.join(__dirname, '../../frontend/out');
+export const staticRoot = path.join(__dirname, './static');
+export const STATIC_DOWNLOAD_FAILED = 'download_failed.mp4';
+export const STATIC_DOWNLOADING = 'downloading.mp4';
+export const STATIC_UNAVAILABLE_FOR_LEGAL_REASONS =
+  'unavailable_for_legal_reasons.mp4';
+export const STATIC_CONTENT_PROXY_LIMIT_REACHED =
+  'content_proxy_limit_reached.mp4';
+export const STATIC_INTERNAL_SERVER_ERROR = '500.mp4';
+export const STATIC_FORBIDDEN = '403.mp4';
+export const STATIC_UNAUTHORIZED = '401.mp4';
+export const STATIC_NO_MATCHING_FILE = 'no_matching_file.mp4';
 
 app.use(ipMiddleware);
 app.use(loggerMiddleware);
@@ -54,6 +70,9 @@ apiRouter.use('/health', healthApi);
 apiRouter.use('/status', statusApi);
 apiRouter.use('/format', formatApi);
 apiRouter.use('/catalogs', catalogApi);
+apiRouter.use('/rpdb', rpdbApi);
+apiRouter.use('/oauth/exchange/gdrive', gdriveApi);
+apiRouter.use('/debrid', debridApi);
 app.use(`/api/v${constants.API_VERSION}`, apiRouter);
 
 // Stremio Routes
@@ -87,6 +106,12 @@ stremioAuthRouter.use('/addon_catalog', addonCatalog);
 app.use('/stremio', stremioRouter); // For public routes
 app.use('/stremio/:uuid/:encryptedPassword', stremioAuthRouter); // For authenticated routes
 
+const builtinsRouter = express.Router();
+builtinsRouter.use(internalMiddleware);
+builtinsRouter.use('/gdrive', gdrive);
+builtinsRouter.use('/torbox-search', torboxSearch);
+app.use('/builtins', builtinsRouter);
+
 app.get(
   ['/_next/*', '/assets/*', '/favicon.ico', '/logo.png'],
   staticRateLimiter,
@@ -100,6 +125,22 @@ app.get(
   }
 );
 
+app.get('/static/*', (req, res, next) => {
+  const filePath = path.resolve(
+    staticRoot,
+    req.path.replace(/^\/static\//, '')
+  );
+  logger.debug(`Static file requested: ${filePath}`);
+  if (filePath.startsWith(staticRoot) && fs.existsSync(filePath)) {
+    res.sendFile(filePath);
+    return;
+  }
+  next();
+});
+
+app.get('/oauth/callback/gdrive', (req, res) => {
+  res.sendFile(path.join(frontendRoot, 'oauth/callback/gdrive.html'));
+});
 app.get('/', (req, res) => {
   res.redirect('/stremio/configure');
 });
