@@ -26,6 +26,7 @@ COPY resources ./resources
 
 # Build the project.
 RUN npm run build
+RUN npm run metadata --channel=nightly
 
 # Remove development dependencies.
 RUN npm --workspaces prune --omit=dev
