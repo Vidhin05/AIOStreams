@@ -94,6 +94,29 @@ export function videoEngine(
       ...elements.map((e) => e.track),
       ...files.map((f) => f.track),
     ];
+    // LG's player keeps one subtitle event and drops the others spoken with it.
+    // The page draws every line that is on at this moment, and the track stays
+    // hidden so the TV does not paint its single line on top.
+    let drawn = '';
+    const pageText = () => {
+      const at = video.current?.currentTime ?? 0;
+      return textTracks()
+        .filter((track) => track.mode !== 'disabled')
+        .flatMap((track) => Array.from(track.cues ?? []))
+        .filter((cue) => cue.startTime <= at && at < cue.endTime)
+        .map((cue) => cue.text.trim())
+        .filter(Boolean)
+        .join('\n');
+    };
+    const paintText = () => {
+      if (!pipeline) return;
+      const text = pageText();
+      if (text === drawn) return;
+      drawn = text;
+      emit({ type: 'subtitle-text', text });
+    };
+    const showTrack = (on: boolean): TextTrackMode =>
+      on ? (pipeline ? 'hidden' : 'showing') : 'disabled';
     const shiftCues = () => {
       for (const track of textTracks()) {
         const cues = track.cues;
@@ -148,14 +171,13 @@ export function videoEngine(
         : null;
       pipeline?.show(own);
       elements.forEach((e, i) => {
-        e.track.mode =
+        e.track.mode = showTrack(
           own === null && file?.subtitles[i]?.id === id
-            ? 'showing'
-            : 'disabled';
+        );
       });
-      for (const f of files)
-        f.track.mode = f.id === id ? 'showing' : 'disabled';
+      for (const f of files) f.track.mode = showTrack(f.id === id);
       shiftCues();
+      paintText();
       set({ subtitle: id });
     };
     const set = (state: EngineState) => emit({ type: 'state', state });
@@ -172,6 +194,7 @@ export function videoEngine(
         removeElements();
         file = next;
         delayMs = next.subtitleDelayMs;
+        drawn = '';
         embedded = [];
         pipeline = webosTextPipeline(el);
         if (pipeline) {
@@ -191,6 +214,7 @@ export function videoEngine(
           track.src = s.url;
           track.label = s.label;
           if (s.lang) track.srclang = s.lang;
+          track.track.addEventListener('cuechange', paintText);
           el.append(track);
           return track;
         });
@@ -218,17 +242,22 @@ export function videoEngine(
           play: () => set({ paused: false }),
           waiting: () => set({ waiting: true }),
           canplay: () => set({ waiting: false }),
-          timeupdate: () =>
+          timeupdate: () => {
+            paintText();
             emit({
               type: 'position',
               positionMs: el.currentTime * 1000,
               bufferedMs: bufferedEnd(),
-            }),
+            });
+          },
           progress: () => emit({ type: 'position', bufferedMs: bufferedEnd() }),
           volumechange: () => set({ volume: el.volume, muted: el.muted }),
           ratechange: () => set({ rate: el.playbackRate }),
           ended: () => emit({ type: 'ended' }),
-          seeked: () => pipeline?.reapply(),
+          seeked: () => {
+            pipeline?.reapply();
+            paintText();
+          },
           error: () =>
             emit({
               type: 'failed',
@@ -245,6 +274,7 @@ export function videoEngine(
         const onTrackLoad = () => {
           placeCues();
           shiftCues();
+          paintText();
         };
         for (const e of elements) e.addEventListener('load', onTrackLoad);
         const onFullscreen = () => set({ fullscreen: isFullscreen() });
@@ -258,6 +288,10 @@ export function videoEngine(
           document.removeEventListener('fullscreenchange', onFullscreen);
           pipeline?.close();
           pipeline = null;
+          if (drawn) {
+            drawn = '';
+            emit({ type: 'subtitle-text', text: '' });
+          }
         };
         onFullscreen();
         el.src = next.url;
@@ -325,6 +359,7 @@ export function videoEngine(
           if (!el) return;
           const track = el.addTextTrack('subtitles', added.name);
           track.mode = 'hidden';
+          track.addEventListener('cuechange', paintText);
           for (const cue of cues)
             track.addCue(
               new VTTCue(cue.startMs / 1000, cue.endMs / 1000, cue.text)

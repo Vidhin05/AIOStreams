@@ -426,7 +426,7 @@ function SubtitleText({ text, style }: { text: string; style: SubtitleStyle }) {
       style={{ bottom: `${100 - subtitleLine(style)}%` }}
     >
       <span
-        className="whitespace-pre-line px-2"
+        className="px-2"
         style={{
           fontSize: `calc(${subtitleScale(style)} * 5vh)`,
           fontWeight,
@@ -436,7 +436,11 @@ function SubtitleText({ text, style }: { text: string; style: SubtitleStyle }) {
           textShadow,
         }}
       >
-        {text}
+        {text.split('\n').map((line, index) => (
+          <span key={index} className="block">
+            {line}
+          </span>
+        ))}
       </span>
     </div>
   );
