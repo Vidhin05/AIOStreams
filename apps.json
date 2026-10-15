@@ -7,15 +7,15 @@
       "shortDescription": "The AIOStreams app for LG TVs.",
       "manifest": {
         "id": "io.github.viren070.aiostreams",
-        "version": "0.4.3",
+        "version": "0.4.4",
         "type": "web",
         "title": "AIOStreams",
         "iconUri": "https://raw.githubusercontent.com/Vidhin05/AIOStreams/webos-subtitles/packages/smart-tv/webos/largeIcon.png",
         "sourceUrl": "https://github.com/Vidhin05/AIOStreams",
         "rootRequired": false,
-        "ipkUrl": "https://github.com/Vidhin05/AIOStreams/releases/download/webos-subtitles-0.4.3/aiostreams-webos-0.4.3.ipk",
+        "ipkUrl": "https://github.com/Vidhin05/AIOStreams/releases/download/webos-subtitles-0.4.4/aiostreams-webos-0.4.4.ipk",
         "ipkHash": {
-          "sha256": "b39486f35a18f57be25e8e3684bb0593c724de33fadfeb28c14a7e81a23c2b23"
+          "sha256": "69a363696e92f005b63ccf761721c8a46e171cfea37624682fda9409dd0f9da3"
         }
       }
     }
