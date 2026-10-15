@@ -4,11 +4,7 @@ import {
   type WebosTextInfo,
   type WebosTextPipeline,
 } from '../hosts/webos-media';
-import {
-  parseAssCues,
-  type PlacedSubtitle,
-  type SubtitleCue,
-} from '../subtitles/cues';
+import type { SubtitleCue } from '../subtitles/cues';
 import {
   checkSubtitleFile,
   readSubtitleCues,
@@ -89,8 +85,6 @@ interface FileTrack {
   id: string;
   label: string;
   track: TextTrack;
-  /** The file's own cues, with a sign's place kept, when it is ASS. */
-  script?: SubtitleCue[];
   /** The whole ASS file, for libass. */
   ass?: string;
 }
@@ -121,10 +115,9 @@ export function videoEngine(
       ...elements.map((e) => e.track),
       ...files.map((f) => f.track),
     ];
-    // LG's player keeps one subtitle event and drops the others spoken with it,
-    // including a sign that belongs at the top. The page draws every line, in
-    // the place the script gave it, and the track stays hidden so the TV does
-    // not paint its single line on top.
+    // LG's player keeps one subtitle event and drops the others spoken with it.
+    // The page draws every line that is on at this moment, and the track stays
+    // hidden so the TV does not paint its single line on top.
     let chosen: string | null = null;
     let scriptId = '';
     let scriptCues: SubtitleCue[] | null = null;
@@ -134,18 +127,14 @@ export function videoEngine(
     let webos: WebosSubtitles | null = null;
     let assId: string | null = null;
     let loadToken = 0;
-    const pageLines = (): PlacedSubtitle[] => {
-      if (assId !== null && assId === chosen) return [];
-      const atMs = (video.current?.currentTime ?? 0) * 1000 - delayMs;
+    const pageText = () => {
+      if (assId !== null && assId === chosen) return '';
       if (scriptCues && scriptId === chosen) {
+        const atMs = (video.current?.currentTime ?? 0) * 1000 - delayMs;
         return scriptCues
           .filter((cue) => cue.startMs <= atMs && atMs < cue.endMs)
-          .map((cue) => ({
-            text: cue.text,
-            anchor: cue.place?.anchor ?? 2,
-            ...(cue.place?.x !== undefined &&
-              cue.place.y !== undefined && { x: cue.place.x, y: cue.place.y }),
-          }));
+          .map((cue) => cue.text)
+          .join('\n');
       }
       const at = video.current?.currentTime ?? 0;
       return textTracks()
@@ -154,19 +143,14 @@ export function videoEngine(
         .filter((cue) => cue.startTime <= at && at < cue.endTime)
         .map((cue) => (cue as VTTCue).text.trim())
         .filter(Boolean)
-        .map((text) => ({ text, anchor: 2 }));
+        .join('\n');
     };
     const paintText = () => {
       if (!pipeline) return;
-      const placed = pageLines();
-      const key = JSON.stringify(placed);
-      if (key === drawn) return;
-      drawn = key;
-      emit({
-        type: 'subtitle-text',
-        text: placed.map((line) => line.text).join('\n'),
-        placed,
-      });
+      const text = pageText();
+      if (text === drawn) return;
+      drawn = text;
+      emit({ type: 'subtitle-text', text });
     };
     const showTrack = (on: boolean): TextTrackMode =>
       on ? (pipeline ? 'hidden' : 'showing') : 'disabled';
@@ -227,8 +211,8 @@ export function videoEngine(
       chosen = id;
       const token = ++scriptToken;
       const added = files.find((f) => f.id === id);
-      scriptCues = added?.script ?? null;
-      scriptId = scriptCues && id ? id : '';
+      scriptCues = null;
+      scriptId = '';
       assId = null;
       webos?.hide();
       const drawScript = async (script: string) => {
@@ -248,20 +232,15 @@ export function videoEngine(
       }
       if (added?.ass) void drawScript(added.ass);
       const server = file?.subtitles.find((s) => s.id === id);
-      if (pipeline && server && !scriptCues) {
+      // The server's VTT of an ASS track stays the page's lines where libass can't run.
+      if (pipeline && server) {
         const assUrl = server.url.replace(/Stream\.vtt(?=\?|$)/, 'Stream.ass');
         void fetch(assUrl)
           .then((res) => (res.ok ? res.text() : ''))
           .then(async (body) => {
             if (token !== scriptToken) return;
             const head = body.replace(/^\uFEFF/, '').trimStart();
-            if (!/^\[script info\]/i.test(head)) return;
-            if ((await drawScript(body)) || token !== scriptToken) return;
-            const parsed = parseAssCues(body);
-            if (!parsed.length || token !== scriptToken) return;
-            scriptId = id ?? '';
-            scriptCues = parsed;
-            paintText();
+            if (/^\[script info\]/i.test(head)) await drawScript(body);
           })
           .catch(() => {});
       }
@@ -412,7 +391,7 @@ export function videoEngine(
           assId = null;
           if (drawn) {
             drawn = '';
-            emit({ type: 'subtitle-text', text: '', placed: [] });
+            emit({ type: 'subtitle-text', text: '' });
           }
         };
         onFullscreen();
@@ -502,13 +481,7 @@ export function videoEngine(
           const id = `file:${files.length}`;
           files = [
             ...files,
-            {
-              id,
-              label: added.name,
-              track,
-              ...(cues.some((cue) => cue.place) && { script: cues }),
-              ...(ass && { ass }),
-            },
+            { id, label: added.name, track, ...(ass && { ass }) },
           ];
           listTracks();
           placeCues();

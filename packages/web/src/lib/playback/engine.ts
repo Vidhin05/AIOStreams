@@ -1,5 +1,5 @@
 import type { SubtitleStyle, VideoFit } from '../settings';
-import type { PlacedSubtitle, SubtitleLine } from '../subtitles/cues';
+import type { SubtitleLine } from '../subtitles/cues';
 import type { BaseItemDto, MediaStream, SourceInfo } from '../types';
 import type { PlaybackPrefs } from '../user-config';
 import type { Chapter } from './chapters';
@@ -75,7 +75,7 @@ export type EngineEvent =
   | { type: 'advanced'; episode: QueuedEpisode }
   /** The user closed the player's own window. */
   | { type: 'closed' }
-  | { type: 'subtitle-text'; text: string; placed?: PlacedSubtitle[] }
+  | { type: 'subtitle-text'; text: string }
   | { type: 'stats-text'; text: string | undefined };
 
 /** A player the page drives; the shared player hook does the rest. */

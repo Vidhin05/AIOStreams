@@ -3,7 +3,7 @@ import type { JellyfinClient } from '../client';
 import { clock } from '../format';
 import { settings, useSetting } from '../settings';
 import { storage } from '../storage';
-import { parseSubtitleLines, type PlacedSubtitle } from '../subtitles/cues';
+import { parseSubtitleLines } from '../subtitles/cues';
 import {
   clampDelay,
   savedSubtitleDelay,
@@ -91,8 +91,6 @@ export function usePlayer(
   const [tracks, setTracks] = React.useState<EngineTrack[]>([]);
   const [chapters, setChapters] = React.useState<Chapter[]>();
   const [subtitleText, setSubtitleText] = React.useState<string>();
-  const [placedSubtitles, setPlacedSubtitles] =
-    React.useState<PlacedSubtitle[]>();
   const [statsPage, setStatsPage] = React.useState<string | null>(null);
   const [statsText, setStatsText] = React.useState<string>();
   const [retry, setRetry] = React.useState<PlayerController['retry']>();
@@ -193,9 +191,7 @@ export function usePlayer(
       case 'closed':
         return latest.current.onClosed?.();
       case 'subtitle-text':
-        setSubtitleText(event.text);
-        setPlacedSubtitles(event.placed);
-        return;
+        return setSubtitleText(event.text);
       case 'stats-text':
         return setStatsText(event.text);
     }
@@ -232,7 +228,6 @@ export function usePlayer(
       ...subtitleTracks.filter((t) => t.external && !t.server).map(asTrack),
     ],
     subtitleText,
-    placedSubtitles,
     togglePlay: () => engine.setPaused(!live.current.paused),
     seek: (ms) => {
       engine.seek(ms);

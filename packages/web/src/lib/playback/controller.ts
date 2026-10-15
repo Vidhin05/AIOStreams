@@ -2,7 +2,7 @@ import { storage } from '../storage';
 import type { JellyfinClient } from '../client';
 import type { Chapter } from './chapters';
 import type { SubtitleStyle } from '../settings';
-import type { PlacedSubtitle, SubtitleLine } from '../subtitles/cues';
+import type { SubtitleLine } from '../subtitles/cues';
 import type { Playhead } from './playhead';
 import type { PlaybackPrefs } from '../user-config';
 import type { BaseItemDto, MediaStream, SourceInfo } from '../types';
@@ -65,11 +65,6 @@ export interface PlayerController {
   canReadSubtitle?: (id: string) => boolean;
   /** The subtitle the page draws, for a player that draws none itself. */
   subtitleText?: string;
-  /**
-   * Each line in the place the script asked for. Present when the page, not
-   * the TV, is drawing; absent when `subtitleText` is one block.
-   */
-  placedSubtitles?: PlacedSubtitle[];
   /** Missing where the page always fills the screen. */
   toggleFullscreen?: () => void;
   /** The file's chapters, where the player reads them. */
