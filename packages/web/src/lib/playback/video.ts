@@ -293,6 +293,12 @@ export function videoEngine(
               pipeline?.show(ordinal);
               paintText();
             },
+            onBack: (ordinal, drawer) => {
+              if (chosen !== `${EMBEDDED}${ordinal}`) return;
+              pipeline?.show(null);
+              if (drawer === 'libass') assId = chosen;
+              paintText();
+            },
           });
           embedded = embeddedSubtitles(next.source);
           pipeline.watch((tracks) => {

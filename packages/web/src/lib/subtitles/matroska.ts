@@ -175,6 +175,97 @@ function withStart(reader: ByteReader, start: Uint8Array): ByteReader {
   };
 }
 
+/** A read the host failed. `lasting` when asking again won't help, as with a 404 or a host without ranges. */
+export class ReadError extends Error {
+  constructor(
+    message: string,
+    readonly lasting: boolean,
+    readonly retryAfterMs = 0
+  ) {
+    super(message);
+  }
+}
+
+const PLAYING_GAP_MS = 334;
+const QUIET_MS = 10_000;
+const MAX_QUIET_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 120_000;
+
+/**
+ * Reads beside the TV's own player. Debrid CDNs throttle, cut or refuse a
+ * client that opens connections next to a stream or asks too fast, then the
+ * video fails too. So: a few reads at once before the video starts, then one
+ * at a time and three a second, and a host that failed is left alone for 10 s,
+ * doubling to a minute, before the next read.
+ */
+export class SideReader implements ByteReader {
+  lanes = 1;
+  private gapMs = PLAYING_GAP_MS;
+  private running = 0;
+  private lastAt = 0;
+  private quietUntil = 0;
+  private quietMs = 0;
+  private timer = 0;
+  private closed = false;
+  private queue: { go: () => void; stop: (error: Error) => void }[] = [];
+
+  constructor(private readonly source: ByteReader) {}
+
+  /** Before the video starts nothing competes with it, so reads go side by side. */
+  setPlaying(playing: boolean): void {
+    this.lanes = playing ? 1 : 3;
+    this.gapMs = playing ? PLAYING_GAP_MS : 0;
+    this.wake();
+  }
+
+  async read(start: number, length: number): Promise<Uint8Array> {
+    await new Promise<void>((go, stop) => {
+      if (this.closed) return stop(new ReadError('Closed', true));
+      this.queue.push({ go, stop });
+      this.wake();
+    });
+    try {
+      const bytes = await this.source.read(start, length);
+      this.quietMs = 0;
+      return bytes;
+    } catch (error) {
+      if (!(error instanceof ReadError && error.lasting)) {
+        this.quietMs = Math.min(this.quietMs * 2 || QUIET_MS, MAX_QUIET_MS);
+        const asked = error instanceof ReadError ? error.retryAfterMs : 0;
+        this.quietUntil =
+          Date.now() +
+          Math.max(this.quietMs, Math.min(asked, MAX_RETRY_AFTER_MS));
+      }
+      throw error;
+    } finally {
+      this.running--;
+      this.wake();
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    window.clearTimeout(this.timer);
+    for (const waiting of this.queue.splice(0))
+      waiting.stop(new ReadError('Closed', true));
+  }
+
+  private wake(): void {
+    window.clearTimeout(this.timer);
+    while (this.queue.length && this.running < this.lanes) {
+      const wait =
+        Math.max(this.quietUntil, this.lastAt + this.gapMs) - Date.now();
+      if (wait > 0) {
+        this.timer = window.setTimeout(() => this.wake(), wait);
+        return;
+      }
+      this.running++;
+      this.lastAt = Date.now();
+      this.queue.shift()!.go();
+    }
+  }
+}
+
 interface Encoding {
   /** 0 zlib, 3 header stripping; the others are not read. */
   algo: number;
@@ -221,7 +312,8 @@ export interface MkvFile {
   scaleMs: number;
   /** In the order of the file's tracks, so the player's numbering. */
   subtitles: MkvSubtitle[];
-  attachments: Attachment[];
+  /** Listed on first use: a read for each file, which only fonts need. */
+  attachments(): Promise<Attachment[]>;
   /** Index points for each track number. */
   cues: Map<number, CueEntry[]>;
   /** Every cluster the index points at, by time. */
@@ -527,12 +619,9 @@ export async function openMatroska(
   }
   const attachmentsAt = at(ATTACHMENTS);
   const cuesAt = at(CUES);
-  const [attachments, cueBytes] = await Promise.all([
-    attachmentsAt === undefined
-      ? []
-      : readAttachments(reader, attachmentsAt).catch(() => []),
-    cuesAt === undefined ? null : readElement(reader, cuesAt, CUES),
-  ]);
+  const cueBytes =
+    cuesAt === undefined ? null : await readElement(reader, cuesAt, CUES);
+  let attachments: Promise<Attachment[]> | undefined;
   const index = cueBytes
     ? readCues(cueBytes, segmentAt, scaleMs)
     : { cues: new Map<number, CueEntry[]>(), clusters: [] };
@@ -552,7 +641,14 @@ export async function openMatroska(
     reader,
     scaleMs,
     subtitles,
-    attachments,
+    attachments: () =>
+      (attachments ??=
+        attachmentsAt === undefined
+          ? Promise.resolve([])
+          : readAttachments(reader, attachmentsAt).catch(() => {
+              attachments = undefined;
+              return [];
+            })),
     ...index,
     firstCluster,
   };
@@ -608,6 +704,23 @@ interface ClusterHead {
   timestamp?: number;
 }
 
+function clusterHead(bytes: Uint8Array, at: number): ClusterHead | null {
+  const found = head(bytes, 0);
+  if (!found || found.id !== CLUSTER) return null;
+  let timestamp: number | undefined;
+  for (const field of children(bytes, found.length, bytes.length)) {
+    if (field.id === TIMESTAMP && whole(bytes, field)) {
+      timestamp = uint(dataOf(bytes, field));
+      break;
+    }
+  }
+  return {
+    data: at + found.length,
+    end: found.size < 0 ? Infinity : at + found.length + found.size,
+    timestamp,
+  };
+}
+
 export interface HarvestedEvent {
   startMs: number;
   endMs: number;
@@ -617,58 +730,82 @@ export interface HarvestedEvent {
 
 interface Task {
   timeMs: number;
-  run(): Promise<void>;
+  run(task: Task): Promise<void>;
   state: 'waiting' | 'running' | 'done';
   tries: number;
   retryAt: number;
+  /** Walks whole clusters, so it waits for the video to have some buffered. */
+  heavy: boolean;
+  /** Where the events it kept start, so a windowed harvest can drop them. */
+  kept: number[];
 }
 
 const AHEAD_MS = 90_000;
 const BEHIND_MS = 10_000;
-const PARALLEL = 3;
-const GIVE_UP_AFTER = 6;
+/** Blocks of one cluster this close together come in one read. */
+const MERGE_GAP = 64 * 1024;
+const MERGE_SPAN = 256 * 1024;
+/** Walking clusters reads much of the file, so it waits while the video has less buffered. */
+const SCAN_BUFFER_MS = 20_000;
+/**
+ * Karaoke and signs drawn frame by frame fill tens of thousands of blocks. A
+ * track past this many is read only near the playhead, and what is far from it
+ * is dropped past KEEP_CHARS and read again on a seek.
+ */
+const WINDOWED_OVER = 8000;
+const KEEP_CHARS = 4 * 1024 * 1024;
+/** Tries for a block the page can't make sense of, as opposed to a read that failed. */
+const BAD_BLOCK_TRIES = 3;
+/** Failed reads, before any worked, that hand the track to the TV while reading goes on. */
+const TROUBLE_AFTER = 2;
 const RETRY_MS = [2000, 5000, 15_000, 30_000, 60_000];
+
+const earliest = (entries: CueEntry[]) =>
+  entries.reduce((ms, entry) => Math.min(ms, entry.timeMs), Infinity);
 
 /**
  * Reads one subtitle track's blocks, nearest the playhead first, then the rest
- * of the file one at a time.
+ * of the file in the background.
  */
 export class SubtitleHarvest {
   readonly events = new Map<number, HarvestedEvent>();
-  onUpdate: () => void = () => {};
-  onFail: (error: unknown) => void = () => {};
+  onUpdate: (event: HarvestedEvent) => void = () => {};
+  /** `lasting` when the host refused for good; otherwise reading goes on. */
+  onFail: (error: unknown, lasting: boolean) => void = () => {};
   private readonly tasks: Task[] = [];
   private readonly clusters = new Map<number, Promise<ClusterHead | null>>();
+  private readonly heads = new Map<number, ClusterHead>();
+  private readonly scanned = new Map<number, Promise<unknown>>();
+  private readonly windowed: boolean;
   private running = 0;
   private positionMs = 0;
   private active = false;
   private failed = false;
   private worked = false;
+  private troubled = false;
   private failures = 0;
+  private roomy = true;
+  private chars = 0;
   private timer = 0;
-  /** Walking clusters reads much of the file, so it keeps to the playhead. */
+  /** No index for the track, so the clusters are walked, near the playhead only. */
   private scanning = false;
   private waiters: { untilMs: number; resolve: () => void }[] = [];
 
   constructor(
     private readonly file: MkvFile,
-    readonly track: MkvSubtitle
+    readonly track: MkvSubtitle,
+    /** Reads to have going at once. */
+    private readonly lanes: () => number = () => 1
   ) {
     const cues = file.cues.get(track.number) ?? [];
-    const scanned = new Set<number>();
+    this.windowed = cues.length > WINDOWED_OVER;
+    const byCluster = new Map<number, CueEntry[]>();
     for (const cue of cues) {
-      if (cue.relative !== undefined) {
-        this.add(cue.timeMs, async () => {
-          await this.readCue(cue);
-        });
-      } else if (!scanned.has(cue.cluster)) {
-        scanned.add(cue.cluster);
-        this.scanning = true;
-        this.add(cue.timeMs, async () => {
-          await this.scan(cue.cluster, cue.cluster + 1);
-        });
-      }
+      const list = byCluster.get(cue.cluster) ?? [];
+      list.push(cue);
+      byCluster.set(cue.cluster, list);
     }
+    for (const [cluster, entries] of byCluster) this.plan(cluster, entries);
     if (!cues.length) this.scanAll();
     this.tasks.sort((a, b) => a.timeMs - b.timeMs);
   }
@@ -688,6 +825,14 @@ export class SubtitleHarvest {
     if (Math.abs(ms - this.positionMs) < 1000) return;
     this.positionMs = ms;
     if (this.active) this.pump();
+  }
+
+  /** How far the video has buffered past the playhead; null where the TV doesn't say. */
+  setBuffered(aheadMs: number | null): void {
+    const roomy = aheadMs === null || aheadMs >= SCAN_BUFFER_MS;
+    if (roomy === this.roomy) return;
+    this.roomy = roomy;
+    if (roomy && this.active) this.pump();
   }
 
   pause(): void {
@@ -713,8 +858,57 @@ export class SubtitleHarvest {
     );
   }
 
-  private add(timeMs: number, run: () => Promise<void>): void {
-    this.tasks.push({ timeMs, run, state: 'waiting', tries: 0, retryAt: 0 });
+  private add(
+    timeMs: number,
+    run: (task: Task) => Promise<void>,
+    heavy = false
+  ): Task {
+    const task: Task = {
+      timeMs,
+      run,
+      state: 'waiting',
+      tries: 0,
+      retryAt: 0,
+      heavy,
+      kept: [],
+    };
+    this.tasks.push(task);
+    return task;
+  }
+
+  /**
+   * One read for each run of nearby blocks in a cluster, and the whole cluster
+   * where the index leaves a block's place out.
+   */
+  private plan(cluster: number, entries: CueEntry[]): void {
+    if (entries.some((entry) => entry.relative === undefined)) {
+      this.add(
+        earliest(entries),
+        (task) => this.scanCluster(cluster, task),
+        true
+      );
+      return;
+    }
+    const sorted = [...entries].sort((a, b) => a.relative! - b.relative!);
+    let run: CueEntry[] = [];
+    const flush = () => {
+      if (!run.length) return;
+      const group = run;
+      run = [];
+      this.add(earliest(group), (task) => this.readRun(cluster, group, task));
+    };
+    for (const entry of sorted) {
+      const first = run[0]?.relative ?? 0;
+      const last = run[run.length - 1]?.relative ?? 0;
+      if (
+        run.length &&
+        (entry.relative! - last > MERGE_GAP ||
+          entry.relative! - first + BLOCK_READ > MERGE_SPAN)
+      )
+        flush();
+      run.push(entry);
+    }
+    flush();
   }
 
   /** Without an index for the track, every cluster is walked for its blocks. */
@@ -724,26 +918,29 @@ export class SubtitleHarvest {
     if (clusters.length) {
       clusters.forEach((cluster, i) => {
         const until = clusters[i + 1]?.at ?? Infinity;
-        this.add(cluster.timeMs, async () => {
-          await this.scan(cluster.at, until);
-        });
+        this.add(
+          cluster.timeMs,
+          async (task) => {
+            await this.scan(cluster.at, until, task);
+          },
+          true
+        );
       });
       return;
     }
     // No index at all: one cluster after another, from the first.
     const walk = (at: number, timeMs: number) => {
-      const task: Task = {
+      const task = this.add(
         timeMs,
-        state: 'waiting',
-        tries: 0,
-        retryAt: 0,
-        run: async () => {
-          const next = await this.scan(at, at + 1);
+        async (self) => {
+          const next = await this.scan(at, at + 1, self);
           if (next === null) return;
           const cluster = await this.cluster(next);
           if (cluster) walk(next, this.toMs(cluster.timestamp ?? 0));
         },
-      };
+        true
+      );
+      this.tasks.pop();
       const after = this.tasks.findIndex((other) => other.timeMs > timeMs);
       this.tasks.splice(after < 0 ? this.tasks.length : after, 0, task);
     };
@@ -759,45 +956,40 @@ export class SubtitleHarvest {
     const from = this.positionMs - BEHIND_MS;
     const to = this.positionMs + AHEAD_MS;
     const ready = (task: Task) =>
-      task.state === 'waiting' && task.retryAt <= now;
+      task.state === 'waiting' &&
+      task.retryAt <= now &&
+      (!task.heavy || this.roomy);
     const near = this.tasks.find(
       (task) => ready(task) && task.timeMs >= from && task.timeMs <= to
     );
     if (near) return near;
-    if (this.running > 0 || this.scanning) return;
+    if (this.running > 0 || this.scanning || this.windowed) return;
+    const later = (task: Task) => ready(task) && !task.heavy;
     return (
-      this.tasks.find((task) => ready(task) && task.timeMs > to) ??
-      this.tasks.find(ready)
+      this.tasks.find((task) => later(task) && task.timeMs > to) ??
+      this.tasks.find(later)
     );
   }
 
   private pump(): void {
     if (!this.active || this.failed) return;
     window.clearTimeout(this.timer);
-    while (this.running < PARALLEL) {
+    while (this.running < this.lanes()) {
       const task = this.next();
       if (!task) break;
       task.state = 'running';
       this.running++;
       task
-        .run()
+        .run(task)
         .then(
           () => {
             task.state = 'done';
             this.worked = true;
+            this.troubled = false;
             this.failures = 0;
+            if (this.windowed) this.trim();
           },
-          (error: unknown) => {
-            task.state = 'waiting';
-            task.tries++;
-            task.retryAt =
-              Date.now() + RETRY_MS[Math.min(task.tries, RETRY_MS.length) - 1];
-            this.failures++;
-            if (!this.worked && this.failures >= GIVE_UP_AFTER) {
-              this.failed = true;
-              this.onFail(error);
-            }
-          }
+          (error: unknown) => this.failedTask(task, error)
         )
         .finally(() => {
           this.running--;
@@ -806,15 +998,39 @@ export class SubtitleHarvest {
         });
     }
     const now = Date.now();
-    const backingOff = this.tasks.filter(
-      (task) => task.state === 'waiting' && task.retryAt > now
+    const soonest = this.tasks.reduce(
+      (at, task) =>
+        task.state === 'waiting' && task.retryAt > now
+          ? Math.min(at, task.retryAt)
+          : at,
+      Infinity
     );
-    if (this.running === 0 && backingOff.length) {
-      const soonest = Math.min(...backingOff.map((task) => task.retryAt));
+    if (this.running === 0 && Number.isFinite(soonest)) {
       this.timer = window.setTimeout(
         () => this.pump(),
         Math.max(soonest - now, 250)
       );
+    }
+  }
+
+  private failedTask(task: Task, error: unknown): void {
+    task.state = 'waiting';
+    if (error instanceof ReadError && error.lasting) {
+      this.failed = true;
+      this.onFail(error, true);
+      return;
+    }
+    task.tries++;
+    if (!(error instanceof ReadError) && task.tries >= BAD_BLOCK_TRIES) {
+      task.state = 'done';
+      return;
+    }
+    task.retryAt =
+      Date.now() + RETRY_MS[Math.min(task.tries, RETRY_MS.length) - 1];
+    this.failures++;
+    if (!this.worked && !this.troubled && this.failures >= TROUBLE_AFTER) {
+      this.troubled = true;
+      this.onFail(error, false);
     }
   }
 
@@ -826,25 +1042,43 @@ export class SubtitleHarvest {
     });
   }
 
+  /** Drops what is far from the playhead until the kept text fits again. */
+  private trim(): void {
+    if (this.chars <= KEEP_CHARS) return;
+    const from = this.positionMs - BEHIND_MS - 60_000;
+    const to = this.positionMs + AHEAD_MS + 60_000;
+    const distance = (task: Task) => Math.abs(task.timeMs - this.positionMs);
+    const far = this.tasks
+      .filter(
+        (task) =>
+          task.state === 'done' &&
+          task.kept.length &&
+          (task.timeMs < from || task.timeMs > to)
+      )
+      .sort((a, b) => distance(b) - distance(a));
+    for (const task of far) {
+      if (this.chars <= KEEP_CHARS * 0.75) break;
+      for (const at of task.kept) {
+        const event = this.events.get(at);
+        if (!event) continue;
+        this.chars -= event.text.length;
+        this.events.delete(at);
+      }
+      task.kept = [];
+      task.state = 'waiting';
+      task.tries = 0;
+    }
+    this.scanned.clear();
+  }
+
   /** The cluster at `at`, or null where the clusters end. */
   private cluster(at: number): Promise<ClusterHead | null> {
     let known = this.clusters.get(at);
     if (!known) {
       known = readAll(this.file.reader, at, 64).then((bytes) => {
-        const found = head(bytes, 0);
-        if (!found || found.id !== CLUSTER) return null;
-        let timestamp: number | undefined;
-        for (const field of children(bytes, found.length, bytes.length)) {
-          if (field.id === TIMESTAMP && whole(bytes, field)) {
-            timestamp = uint(dataOf(bytes, field));
-            break;
-          }
-        }
-        return {
-          data: at + found.length,
-          end: found.size < 0 ? Infinity : at + found.length + found.size,
-          timestamp,
-        };
+        const found = clusterHead(bytes, at);
+        if (found) this.heads.set(at, found);
+        return found;
       });
       known.catch(() => this.clusters.delete(at));
       this.clusters.set(at, known);
@@ -856,6 +1090,7 @@ export class SubtitleHarvest {
     at: number,
     block: Block,
     cluster: ClusterHead,
+    task: Task,
     cue?: CueEntry
   ): Promise<void> {
     if (block.track !== this.track.number || this.events.has(at)) return;
@@ -868,45 +1103,106 @@ export class SubtitleHarvest {
         ? this.toMs(block.duration)
         : (cue?.durationMs ?? DEFAULT_DURATION_MS);
     const payload = await decoded(block.payload, this.track.encoding, 1);
-    this.events.set(at, {
+    const event = {
       startMs,
       endMs: startMs + durationMs,
       text: text(payload),
-    });
-    this.onUpdate();
+    };
+    this.events.set(at, event);
+    this.chars += event.text.length;
+    task.kept.push(at);
+    this.onUpdate(event);
   }
 
-  private async readCue(cue: CueEntry): Promise<void> {
-    const cluster = await this.cluster(cue.cluster);
+  /** A run of index points in one cluster, read together with the cluster's head where it is near. */
+  private async readRun(
+    clusterAt: number,
+    run: CueEntry[],
+    task: Task
+  ): Promise<void> {
+    const first = run[0].relative!;
+    const last = run[run.length - 1].relative!;
+    let cluster = this.heads.get(clusterAt) ?? null;
+    let bytes: Uint8Array = new Uint8Array();
+    let bytesAt = 0;
+    if (!cluster && first <= MERGE_GAP) {
+      // An id and a size take at most twelve bytes.
+      bytesAt = clusterAt;
+      bytes = await readAll(
+        this.file.reader,
+        clusterAt,
+        12 + last + BLOCK_READ
+      );
+      cluster = clusterHead(bytes, clusterAt);
+      if (cluster) {
+        this.heads.set(clusterAt, cluster);
+        this.clusters.set(clusterAt, Promise.resolve(cluster));
+      }
+    } else {
+      cluster = await this.cluster(clusterAt);
+      if (cluster) {
+        bytesAt = cluster.data + first;
+        bytes = await readAll(
+          this.file.reader,
+          bytesAt,
+          last - first + BLOCK_READ
+        );
+      }
+    }
     if (!cluster) throw new Error('The index points at no cluster');
-    const at = cluster.data + (cue.relative ?? 0);
-    const first = await readAll(this.file.reader, at, BLOCK_READ);
-    const found = head(first, 0);
+    let misplaced = false;
+    for (const entry of run) {
+      const at = cluster.data + entry.relative!;
+      const block = await this.blockAt(at, bytes, bytesAt);
+      if (block) await this.keep(at, block, cluster, task, entry);
+      else misplaced = true;
+    }
+    // An index that points beside the block still names its cluster.
+    if (misplaced) await this.scanCluster(clusterAt, task);
+  }
+
+  /** The track's block whose header is at `at`, from `bytes` where they hold it. */
+  private async blockAt(
+    at: number,
+    bytes: Uint8Array,
+    bytesAt: number
+  ): Promise<Block | null> {
+    const offset = at - bytesAt;
+    let local =
+      offset >= 0 && offset + 16 <= bytes.length
+        ? bytes.subarray(offset)
+        : await readAll(this.file.reader, at, BLOCK_READ);
+    const found = head(local, 0);
     if (
       !found ||
       (found.id !== BLOCK_GROUP && found.id !== SIMPLE_BLOCK) ||
       found.size < 0 ||
-      found.size > MAX_BLOCK
+      found.size > MAX_BLOCK ||
+      blockTrack(local.subarray(0, 64), found) !== this.track.number
     )
-      throw new Error('The index points at no block');
+      return null;
     const total = found.length + found.size;
-    const bytes =
-      total <= first.length
-        ? first
-        : concat(
-            [
-              first,
-              await readAll(
-                this.file.reader,
-                at + first.length,
-                total - first.length
-              ),
-            ],
-            total
-          );
-    if (bytes.length < total) throw new Error('The block was cut short');
-    const block = readBlock(bytes, found);
-    if (block) await this.keep(at, block, cluster, cue);
+    if (local.length < total) {
+      const rest = await readAll(
+        this.file.reader,
+        at + local.length,
+        total - local.length
+      );
+      if (local.length + rest.length < total)
+        throw new ReadError('The block was cut short', false);
+      local = concat([local, rest], total);
+    }
+    return readBlock(local.subarray(0, total), found);
+  }
+
+  private async scanCluster(at: number, task: Task): Promise<void> {
+    let scanned = this.scanned.get(at);
+    if (!scanned) {
+      scanned = this.scan(at, at + 1, task);
+      scanned.catch(() => this.scanned.delete(at));
+      this.scanned.set(at, scanned);
+    }
+    await scanned;
   }
 
   /**
@@ -914,7 +1210,11 @@ export class SubtitleHarvest {
    * skipping the others' data. Returns where the walk stopped, or null at the
    * end of the file.
    */
-  private async scan(from: number, until: number): Promise<number | null> {
+  private async scan(
+    from: number,
+    until: number,
+    task: Task
+  ): Promise<number | null> {
     let at = from;
     while (at < until) {
       const cluster = await this.cluster(at);
@@ -922,6 +1222,8 @@ export class SubtitleHarvest {
       let next = cluster.data;
       let chunk: Uint8Array = new Uint8Array();
       let chunkAt = next;
+      // Past a big video block the next header is all that's needed.
+      let skipped = false;
       const ensure = async (position: number, length: number) => {
         if (position >= chunkAt && position + length <= chunkAt + chunk.length)
           return;
@@ -929,7 +1231,7 @@ export class SubtitleHarvest {
         chunk = await readAll(
           this.file.reader,
           position,
-          Math.max(length, SCAN_WINDOW)
+          Math.max(length, skipped ? BLOCK_READ : SCAN_WINDOW)
         );
       };
       while (next < cluster.end) {
@@ -948,9 +1250,10 @@ export class SubtitleHarvest {
             await ensure(next, found.length + found.size);
             const bytes = chunk.subarray(next - chunkAt, end - chunkAt);
             const block = readBlock(bytes, found);
-            if (block) await this.keep(next, block, cluster);
+            if (block) await this.keep(next, block, cluster, task);
           }
         }
+        skipped = found.length + found.size > SCAN_WINDOW;
         next = end;
       }
       at = next;
@@ -1110,22 +1413,21 @@ export class AttachedFonts {
 
   /** Each font `families` needs that was not handed out before. */
   async take(families: Set<string>): Promise<Uint8Array[]> {
-    const fonts = this.file.attachments.filter(
+    const fonts = (await this.file.attachments()).filter(
       (file) => isFont(file) && !this.taken.has(file)
     );
-    const wanted = await Promise.all(
-      fonts.map(async (font) => {
-        let names = this.names.get(font);
-        if (!names) {
-          names = fontNames(this.file.reader, font).catch(() => []);
-          this.names.set(font, names);
-        }
-        return (await names).some((name) => families.has(name));
-      })
-    );
     const out: Uint8Array[] = [];
-    for (const [i, font] of fonts.entries()) {
-      if (!wanted[i] || this.taken.has(font)) continue;
+    for (const font of fonts) {
+      let names = this.names.get(font);
+      if (!names) {
+        names = fontNames(this.file.reader, font).catch(() => {
+          this.names.delete(font);
+          return [];
+        });
+        this.names.set(font, names);
+      }
+      if (!(await names).some((name) => families.has(name))) continue;
+      if (this.taken.has(font)) continue;
       this.taken.add(font);
       const bytes = await readAll(this.file.reader, font.at, font.size).catch(
         () => null

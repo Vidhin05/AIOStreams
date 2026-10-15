@@ -1,4 +1,4 @@
-import type { ByteReader } from '../subtitles/matroska';
+import { ReadError, type ByteReader } from '../subtitles/matroska';
 
 /**
  * The app's own service on the TV (`packages/smart-tv/webos-service`). It reads
@@ -19,6 +19,23 @@ interface PalmServiceBridge {
 /** The service is missing or the bus refused the call, rather than the host failing. */
 class NoService extends Error {}
 
+/**
+ * Throttling, a busy server and a dropped connection (0) pass. The rest of the
+ * 4xx don't, nor a 200 that ignored the range.
+ */
+const lasting = (status: number) =>
+  (status >= 200 && status < 300) ||
+  (status >= 400 && status < 500 && status !== 408 && status !== 429);
+
+function hostError(status: number, message: string, retryAfter?: unknown) {
+  const seconds = Number(retryAfter);
+  return new ReadError(
+    message,
+    lasting(status),
+    seconds > 0 ? seconds * 1000 : 0
+  );
+}
+
 function callService(
   parameters: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
@@ -35,7 +52,7 @@ function callService(
     };
     const timer = window.setTimeout(() => {
       finish();
-      reject(new Error('The TV service did not answer'));
+      reject(new ReadError('The TV service did not answer', false));
     }, TIMEOUT_MS);
     bridge.onservicecallback = (message) => {
       finish();
@@ -43,7 +60,9 @@ function callService(
       try {
         result = JSON.parse(message) as Record<string, unknown>;
       } catch {
-        reject(new Error('The TV service gave an unreadable answer'));
+        reject(
+          new ReadError('The TV service gave an unreadable answer', false)
+        );
         return;
       }
       if (result.returnValue !== false) {
@@ -52,7 +71,9 @@ function callService(
       }
       const reason = String(result.errorText ?? 'The TV service failed');
       reject(
-        'httpStatus' in result ? new Error(reason) : new NoService(reason)
+        'httpStatus' in result
+          ? hostError(Number(result.httpStatus) || 0, reason, result.retryAfter)
+          : new NoService(reason)
       );
     };
     bridge.call(SERVICE, JSON.stringify(parameters));
@@ -72,24 +93,38 @@ async function fetchRange(
   start: number,
   length: number
 ): Promise<Uint8Array> {
-  const response = await fetch(url, {
-    headers: { ...headers, Range: `bytes=${start}-${start + length - 1}` },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { ...headers, Range: `bytes=${start}-${start + length - 1}` },
+    });
+  } catch (error) {
+    throw new ReadError(String(error), false);
+  }
   if (response.status !== 206 && !(response.status === 200 && start === 0)) {
     void response.body?.cancel();
-    throw new Error(`No ranged reads from this host (${response.status})`);
+    throw hostError(
+      response.status,
+      `The host answered ${response.status}`,
+      response.headers.get('retry-after')
+    );
   }
   const reader = response.body?.getReader();
   if (!reader) return new Uint8Array(await response.arrayBuffer());
   const parts: Uint8Array[] = [];
   let got = 0;
-  while (got < length) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    got += value.length;
+  try {
+    while (got < length) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+    }
+  } catch (error) {
+    // A host that cuts the body off still sent what came; the rest is asked for again.
+    if (!got) throw new ReadError(String(error), false);
   }
-  void reader.cancel();
+  void reader.cancel().catch(() => {});
   const out = new Uint8Array(Math.min(got, length));
   let at = 0;
   for (const part of parts) {

@@ -13,10 +13,13 @@ var service = new Service('io.github.viren070.aiostreams.service');
 var MAX_LENGTH = 1024 * 1024;
 var MAX_REDIRECTS = 8;
 var TIMEOUT_MS = 20000;
+// The page reads three at once at most, and only before the video starts.
 var agents = {
-  'http:': new http.Agent({ keepAlive: true, maxSockets: 4 }),
-  'https:': new https.Agent({ keepAlive: true, maxSockets: 4 }),
+  'http:': new http.Agent({ keepAlive: true, maxSockets: 3 }),
+  'https:': new https.Agent({ keepAlive: true, maxSockets: 3 }),
 };
+// What an expired redirect target answers, so the address is asked again.
+var EXPIRED = [401, 403, 404, 410];
 // Where each address last redirected to, so later reads skip the redirect.
 var landed = {};
 
@@ -42,10 +45,22 @@ function fetchRange(target, headers, start, length, hops, done) {
   var sent = copy(headers, true);
   sent.Range = 'bytes=' + start + '-' + (start + length - 1);
   var finished = false;
+  var chunks = [];
+  var got = 0;
   var finish = function (error, result) {
     if (finished) return;
     finished = true;
     done(error, result);
+  };
+  var end = function () {
+    finish(null, { body: Buffer.concat(chunks).slice(0, length), at: target });
+  };
+  // A host that cuts the body off still sent what came; the page asks for the rest.
+  var redirected = false;
+  var broken = function (error) {
+    if (redirected) return;
+    if (got > 0) end();
+    else finish(error);
   };
   var request = lib.request(
     {
@@ -66,6 +81,7 @@ function fetchRange(target, headers, start, length, hops, done) {
           return finish(new Error('Too many redirects'));
         var next = url.resolve(target, location);
         var sameHost = url.parse(next).host === parsed.host;
+        redirected = true;
         return fetchRange(
           next,
           copy(headers, sameHost),
@@ -79,16 +95,9 @@ function fetchRange(target, headers, start, length, hops, done) {
         response.resume();
         var refused = new Error('The host answered ' + status);
         refused.status = status;
+        refused.retryAfter = Number(response.headers['retry-after']) || 0;
         return finish(refused);
       }
-      var chunks = [];
-      var got = 0;
-      var end = function () {
-        finish(null, {
-          body: Buffer.concat(chunks).slice(0, length),
-          at: target,
-        });
-      };
       response.on('data', function (chunk) {
         chunks.push(chunk);
         got += chunk.length;
@@ -99,18 +108,20 @@ function fetchRange(target, headers, start, length, hops, done) {
         }
       });
       response.on('end', end);
-      response.on('error', function (error) {
-        finish(error);
+      response.on('aborted', function () {
+        broken(new Error('The host closed the connection'));
       });
+      response.on('close', function () {
+        broken(new Error('The host closed the connection'));
+      });
+      response.on('error', broken);
     }
   );
   request.setTimeout(TIMEOUT_MS, function () {
     request.abort();
-    finish(new Error('The host did not answer in time'));
+    broken(new Error('The host did not answer in time'));
   });
-  request.on('error', function (error) {
-    finish(error);
-  });
+  request.on('error', broken);
   request.end();
 }
 
@@ -124,6 +135,7 @@ service.register('read', function (message) {
       errorCode: -1,
       errorText: String((error && error.message) || error),
       httpStatus: (error && error.status) || 0,
+      retryAfter: (error && error.retryAfter) || 0,
     });
   };
   if (typeof payload.url !== 'string' || !(start >= 0) || !(length > 0))
@@ -150,7 +162,8 @@ service.register('read', function (message) {
       }
     );
   }
-  // A redirect's target expires, so a refusal there starts again from the address.
+  // A redirect's target expires, so a refusal there starts again from the
+  // address. A host that is throttling or refusing connections is left alone.
   fetchRange(
     known,
     copy(headers, false),
@@ -159,6 +172,7 @@ service.register('read', function (message) {
     0,
     function (error, result) {
       if (!error) return answer(result);
+      if (EXPIRED.indexOf(error.status) < 0) return fail(error);
       delete landed[payload.url];
       fetchRange(
         payload.url,

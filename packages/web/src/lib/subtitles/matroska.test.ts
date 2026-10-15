@@ -4,7 +4,9 @@ import { deflateSync } from 'node:zlib';
 import {
   assScript,
   openMatroska,
+  ReadError,
   scriptFamilies,
+  SideReader,
   SubtitleHarvest,
   type ByteReader,
 } from './matroska';
@@ -79,7 +81,17 @@ const group = (
 ) =>
   el(0xa0, el(0xa1, block(track, relative, payload)), el(0x9b, uint(duration)));
 
-function file(): Uint8Array {
+interface Shape {
+  /** Bytes of video before the first subtitles, so they lie past the first read. */
+  videoBytes?: number;
+  /** The index points the first line at the video block next to it. */
+  misplaced?: boolean;
+}
+
+function file({
+  videoBytes = 3000,
+  misplaced = false,
+}: Shape = {}): Uint8Array {
   const tracks = el(
     0x1654ae6b,
     el(
@@ -107,7 +119,7 @@ function file(): Uint8Array {
     )
   );
   const info = el(0x1549a966, el(0x2ad7b1, uint(1_000_000)));
-  const video = el(0xa3, block(1, 0, new Uint8Array(3000)));
+  const video = el(0xa3, block(1, 0, new Uint8Array(videoBytes)));
   const hello = group(2, 1000, 2000, str('0,0,Default,,0,0,0,,Hello'));
   const sign = group(2, 1000, 2000, str('1,0,Sign,,0,0,0,,{\\an8}On the door'));
   const plain = group(3, 1500, 1000, deflateSync(str('<i>Plain line</i>')));
@@ -143,7 +155,7 @@ function file(): Uint8Array {
   const cues = el(
     0x1c53bb6b,
     cue(0, 1, cluster1At),
-    cue(1000, 2, cluster1At, relative(first, 2)),
+    cue(1000, 2, cluster1At, relative(first, misplaced ? 1 : 2)),
     cue(1000, 2, cluster1At, relative(first, 3)),
     cue(5000, 1, cluster2At),
     cue(5000, 2, cluster2At, relative(second, 1))
@@ -155,7 +167,9 @@ function file(): Uint8Array {
     tracks,
     cluster1,
     cluster2,
-    cues
+    cues,
+    // Void, so no read runs into the end of the file.
+    el(0xec, new Uint8Array(8192))
   );
   return join(el(0x1a45dfa3, el(0x4282, str('matroska'))), segment);
 }
@@ -167,6 +181,20 @@ function memory(bytes: Uint8Array): ByteReader & { reads: number } {
     read: async (start: number, length: number) => {
       reader.reads++;
       return bytes.slice(start, start + Math.min(length, 700));
+    },
+  };
+  return reader;
+}
+
+/** Whole reads, counted, failing with `fail` once it is set. */
+function whole(bytes: Uint8Array) {
+  const reader = {
+    reads: 0,
+    fail: null as Error | null,
+    read: async (start: number, length: number) => {
+      if (reader.fail) throw reader.fail;
+      reader.reads++;
+      return bytes.slice(start, start + length);
     },
   };
   return reader;
@@ -215,6 +243,84 @@ describe('SubtitleHarvest', () => {
       { startMs: 1500, endMs: 2500, text: '<i>Plain line</i>' },
     ]);
     harvest.pause();
+  });
+
+  it('reads the nearby blocks of a cluster together with its head', async () => {
+    const reader = whole(file({ videoBytes: 300_000 }));
+    const opened = (await openMatroska(reader))!;
+    reader.reads = 0;
+    const harvest = new SubtitleHarvest(opened, opened.subtitles[0]);
+    harvest.start(0);
+    await harvest.settled(60_000);
+    assert.equal(harvest.events.size, 3);
+    assert.equal(reader.reads, 2);
+    harvest.pause();
+  });
+
+  it('walks the cluster when the index points beside a block', async () => {
+    const opened = (await openMatroska(memory(file({ misplaced: true }))))!;
+    const harvest = new SubtitleHarvest(opened, opened.subtitles[0]);
+    harvest.start(0);
+    await harvest.settled(60_000);
+    const script = assScript(opened.subtitles[0], harvest.events.values());
+    assert.equal(script.match(/^Dialogue:/gm)?.length, 3);
+    harvest.pause();
+  });
+
+  it('gives up at once on a refusal, and only warns on a passing failure', async () => {
+    for (const lasting of [true, false]) {
+      const reader = whole(file({ videoBytes: 300_000 }));
+      const opened = (await openMatroska(reader))!;
+      reader.fail = new ReadError('No', lasting);
+      const harvest = new SubtitleHarvest(opened, opened.subtitles[0]);
+      const failed = new Promise<boolean>((resolve) => {
+        harvest.onFail = (_error, said) => resolve(said);
+      });
+      harvest.start(0);
+      assert.equal(await failed, lasting);
+      harvest.pause();
+    }
+  });
+});
+
+describe('SideReader', () => {
+  it('reads one at a time and three a second once the video plays', async () => {
+    let open = 0;
+    let most = 0;
+    const side = new SideReader({
+      read: async () => {
+        most = Math.max(most, ++open);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        open--;
+        return new Uint8Array(1);
+      },
+    });
+    side.setPlaying(false);
+    await Promise.all([0, 1, 2].map((i) => side.read(i, 1)));
+    assert.equal(most, 3);
+    most = 0;
+    side.setPlaying(true);
+    const started = Date.now();
+    await Promise.all([0, 1, 2].map((i) => side.read(i, 1)));
+    assert.equal(most, 1);
+    assert.ok(Date.now() - started >= 600);
+  });
+
+  it('leaves a failing host alone before the next read', async () => {
+    let calls = 0;
+    const side = new SideReader({
+      read: async () => {
+        calls++;
+        throw new ReadError('Busy', false);
+      },
+    });
+    side.setPlaying(false);
+    await assert.rejects(side.read(0, 1));
+    const next = side.read(0, 1).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(calls, 1);
+    side.close();
+    await next;
   });
 });
 
