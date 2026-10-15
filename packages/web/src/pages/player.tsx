@@ -41,6 +41,7 @@ import {
   type SubtitleStyle,
   type VideoFit,
 } from '../lib/settings';
+import type { PlacedSubtitle } from '../lib/subtitles/cues';
 import {
   subtitleCss,
   subtitleLine,
@@ -415,6 +416,112 @@ function cueCss(style: SubtitleStyle): string {
   }`;
 }
 
+function anchorBand(anchor: number): {
+  vertical: 'top' | 'middle' | 'bottom';
+  horizontal: 'left' | 'center' | 'right';
+} {
+  return {
+    vertical: anchor >= 7 ? 'top' : anchor >= 4 ? 'middle' : 'bottom',
+    horizontal: anchor % 3 === 1 ? 'left' : anchor % 3 === 0 ? 'right' : 'center',
+  };
+}
+
+function cueLines(text: string, style: React.CSSProperties) {
+  return (
+    <span className="px-2" style={style}>
+      {text.split('\n').map((line, index) => (
+        <span key={index} className="block">
+          {line}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Signs stay where the script put them; dialogue stays near the bottom. */
+function PlacedSubtitles({
+  lines,
+  style,
+}: {
+  lines: PlacedSubtitle[];
+  style: SubtitleStyle;
+}) {
+  const css = subtitleCss(style);
+  const textStyle: React.CSSProperties = {
+    fontSize: `calc(${subtitleScale(style)} * 5vh)`,
+    fontWeight: css.fontWeight,
+    fontFamily: css.fontFamily,
+    color: css.color,
+    backgroundColor: css.backgroundColor,
+    textShadow: css.textShadow,
+  };
+  const bottom = `${100 - subtitleLine(style)}%`;
+  const pinned = lines.filter((line) => line.x !== undefined && line.y !== undefined);
+  const grouped = new Map<number, PlacedSubtitle[]>();
+  for (const line of lines) {
+    if (line.x !== undefined && line.y !== undefined) continue;
+    const anchor = line.anchor >= 1 && line.anchor <= 9 ? line.anchor : 2;
+    grouped.set(anchor, [...(grouped.get(anchor) ?? []), line]);
+  }
+  return (
+    <>
+      {[...grouped].map(([anchor, group]) => {
+        const { vertical, horizontal } = anchorBand(anchor);
+        const align =
+          horizontal === 'left' ? 'left' : horizontal === 'right' ? 'right' : 'center';
+        return (
+          <div
+            key={anchor}
+            data-ui="player-subtitle"
+            className="pointer-events-none fixed inset-x-0 flex px-[5%]"
+            style={{
+              top: vertical === 'top' ? '4%' : vertical === 'middle' ? '50%' : undefined,
+              bottom: vertical === 'bottom' ? bottom : undefined,
+              transform: vertical === 'middle' ? 'translateY(-50%)' : undefined,
+              justifyContent:
+                horizontal === 'left'
+                  ? 'flex-start'
+                  : horizontal === 'right'
+                    ? 'flex-end'
+                    : 'center',
+              textAlign: align,
+            }}
+          >
+            {cueLines(group.map((line) => line.text).join('\n'), textStyle)}
+          </div>
+        );
+      })}
+      {pinned.map((line, index) => {
+        const { vertical, horizontal } = anchorBand(line.anchor);
+        const x =
+          horizontal === 'left' ? '0' : horizontal === 'right' ? '-100%' : '-50%';
+        const y =
+          vertical === 'top' ? '0' : vertical === 'middle' ? '-50%' : '-100%';
+        return (
+          <div
+            key={`pos-${index}`}
+            data-ui="player-subtitle"
+            className="pointer-events-none fixed max-w-[90%] px-[2%]"
+            style={{
+              left: `${line.x}%`,
+              top: `${line.y}%`,
+              transform: `translate(${x}, ${y})`,
+              textAlign:
+                horizontal === 'left'
+                  ? 'left'
+                  : horizontal === 'right'
+                    ? 'right'
+                    : 'center',
+            }}
+          >
+            {cueLines(line.text, textStyle)}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /** For a player that draws no subtitles, placed and sized as the page's own video draws cues. */
 function SubtitleText({ text, style }: { text: string; style: SubtitleStyle }) {
   const { fontWeight, fontFamily, color, backgroundColor, textShadow } =
@@ -581,8 +688,14 @@ function Player({
           />
         </>
       )}
-      {player.subtitleText && (
-        <SubtitleText text={player.subtitleText} style={subtitleStyle} />
+      {player.placedSubtitles ? (
+        player.placedSubtitles.length > 0 && (
+          <PlacedSubtitles lines={player.placedSubtitles} style={subtitleStyle} />
+        )
+      ) : (
+        player.subtitleText && (
+          <SubtitleText text={player.subtitleText} style={subtitleStyle} />
+        )
       )}
       {player.stats?.text && (
         <pre
