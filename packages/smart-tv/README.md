@@ -7,6 +7,11 @@ TVs play through the page's `<video>` element, Samsung TVs through Samsung's own
 drawn beneath the page. The web app finds out which TV it's on from what the TV injects
 (`window.webOSSystem` or `window.tizen`); see `src/lib/hosts/webos.ts` and `tizen/` there.
 
+LG's player draws a file's own ASS subtitles badly, so on LG the page reads the subtitle track out
+of the file itself, a few small byte ranges at a time, and libass draws it. The webOS package
+carries what that needs: libass (`static/jassub`) and `webos-service`, a small service that makes
+those reads outside the page, where hosts that send no CORS headers can still be read.
+
 Expect 2023 or newer TVs (webOS 23, Tizen 7). Older engines lack CSS the app uses, but the packages
 install on them anyway: `boot.js` says the TV is too old and offers to try. It also shows what
 stopped the app starting, as a TV has no console.

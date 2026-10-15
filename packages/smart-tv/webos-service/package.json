@@ -1,0 +1,6 @@
+{
+  "name": "io.github.viren070.aiostreams.service",
+  "version": "1.0.0",
+  "private": true,
+  "main": "service.js"
+}

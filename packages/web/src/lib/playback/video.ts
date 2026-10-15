@@ -9,7 +9,11 @@ import {
   type PlacedSubtitle,
   type SubtitleCue,
 } from '../subtitles/cues';
-import { checkSubtitleFile, readSubtitleCues } from '../subtitles/files';
+import {
+  checkSubtitleFile,
+  readSubtitleCues,
+  readSubtitleText,
+} from '../subtitles/files';
 import { subtitleLine } from '../subtitles/style';
 import type { SourceInfo } from '../types';
 import { ofType, ownTrackLabel, trackLabel } from './controller';
@@ -20,6 +24,7 @@ import type {
   EngineTrack,
 } from './engine';
 import { isFullscreen, toggleDocumentFullscreen } from './fullscreen';
+import { webosSubtitles, type WebosSubtitles } from './webos-subtitles';
 
 const SUBTITLE_TYPES = ['srt', 'vtt', 'ass', 'ssa'];
 
@@ -57,6 +62,19 @@ function embeddedSubtitles(source: SourceInfo): EngineTrack[] {
     }));
 }
 
+/** A file that may hold subtitles the page can read itself: Matroska, with text ones. */
+function readsOwnSubtitles(source: SourceInfo): boolean {
+  if (source.Container && !/mkv|matroska|webm/i.test(source.Container))
+    return false;
+  const own = ofType(source, 'Subtitle').filter(
+    (s) => s.DeliveryMethod !== 'External'
+  );
+  return (
+    !own.length ||
+    own.some((s) => !/pgs|dvd|dvb|vobsub|hdmv/i.test(s.Codec ?? ''))
+  );
+}
+
 function pipelineSubtitles(tracks: WebosTextInfo[]): EngineTrack[] {
   return tracks.map((track, i) => ({
     id: `${EMBEDDED}${i}`,
@@ -73,6 +91,8 @@ interface FileTrack {
   track: TextTrack;
   /** The file's own cues, with a sign's place kept, when it is ASS. */
   script?: SubtitleCue[];
+  /** The whole ASS file, for libass. */
+  ass?: string;
 }
 
 /**
@@ -110,7 +130,12 @@ export function videoEngine(
     let scriptCues: SubtitleCue[] | null = null;
     let scriptToken = 0;
     let drawn = '';
+    // On webOS, libass draws ASS as authored, and the page leaves that subtitle alone.
+    let webos: WebosSubtitles | null = null;
+    let assId: string | null = null;
+    let loadToken = 0;
     const pageLines = (): PlacedSubtitle[] => {
+      if (assId !== null && assId === chosen) return [];
       const atMs = (video.current?.currentTime ?? 0) * 1000 - delayMs;
       if (scriptCues && scriptId === chosen) {
         return scriptCues
@@ -127,7 +152,7 @@ export function videoEngine(
         .filter((track) => track.mode !== 'disabled')
         .flatMap((track) => Array.from(track.cues ?? []))
         .filter((cue) => cue.startTime <= at && at < cue.endTime)
-        .map((cue) => cue.text.trim())
+        .map((cue) => (cue as VTTCue).text.trim())
         .filter(Boolean)
         .map((text) => ({ text, anchor: 2 }));
     };
@@ -197,21 +222,41 @@ export function videoEngine(
       const own = id?.startsWith(EMBEDDED)
         ? Number(id.slice(EMBEDDED.length))
         : null;
+      // The TV draws a track of the file's own until the page can.
       pipeline?.show(own);
       chosen = id;
       const token = ++scriptToken;
-      const addedScript = files.find((f) => f.id === id)?.script;
-      scriptCues = addedScript ?? null;
+      const added = files.find((f) => f.id === id);
+      scriptCues = added?.script ?? null;
       scriptId = scriptCues && id ? id : '';
+      assId = null;
+      webos?.hide();
+      const drawScript = async (script: string) => {
+        const shown = (await webos?.showScript(script)) ?? false;
+        if (!shown || token !== scriptToken) return false;
+        assId = id;
+        paintText();
+        return true;
+      };
+      if (webos && own !== null) {
+        void webos.showEmbedded(own).then((drawer) => {
+          if (!drawer || token !== scriptToken) return;
+          pipeline?.show(null);
+          if (drawer === 'libass') assId = id;
+          paintText();
+        });
+      }
+      if (added?.ass) void drawScript(added.ass);
       const server = file?.subtitles.find((s) => s.id === id);
       if (pipeline && server && !scriptCues) {
         const assUrl = server.url.replace(/Stream\.vtt(?=\?|$)/, 'Stream.ass');
         void fetch(assUrl)
           .then((res) => (res.ok ? res.text() : ''))
-          .then((body) => {
+          .then(async (body) => {
             if (token !== scriptToken) return;
             const head = body.replace(/^\uFEFF/, '').trimStart();
             if (!/^\[script info\]/i.test(head)) return;
+            if ((await drawScript(body)) || token !== scriptToken) return;
             const parsed = parseAssCues(body);
             if (!parsed.length || token !== scriptToken) return;
             scriptId = id ?? '';
@@ -221,9 +266,7 @@ export function videoEngine(
           .catch(() => {});
       }
       elements.forEach((e, i) => {
-        e.track.mode = showTrack(
-          own === null && file?.subtitles[i]?.id === id
-        );
+        e.track.mode = showTrack(own === null && file?.subtitles[i]?.id === id);
       });
       for (const f of files) f.track.mode = showTrack(f.id === id);
       shiftCues();
@@ -252,6 +295,26 @@ export function videoEngine(
         embedded = [];
         pipeline = webosTextPipeline(el);
         if (pipeline) {
+          webos = webosSubtitles({
+            video: el,
+            url: next.url,
+            headers: next.headers,
+            delayMs: next.subtitleDelayMs,
+            onCues: (cues) => {
+              if (!chosen?.startsWith(EMBEDDED)) return;
+              scriptCues = cues;
+              scriptId = chosen;
+              paintText();
+            },
+            onLost: (ordinal) => {
+              if (chosen !== `${EMBEDDED}${ordinal}`) return;
+              assId = null;
+              scriptCues = null;
+              scriptId = '';
+              pipeline?.show(ordinal);
+              paintText();
+            },
+          });
           embedded = embeddedSubtitles(next.source);
           pipeline.watch((tracks) => {
             // The same count keeps the names already on these tracks. An empty
@@ -297,6 +360,7 @@ export function videoEngine(
           waiting: () => set({ waiting: true }),
           canplay: () => set({ waiting: false }),
           timeupdate: () => {
+            webos?.setPosition(el.currentTime * 1000 - delayMs);
             paintText();
             emit({
               type: 'position',
@@ -310,6 +374,7 @@ export function videoEngine(
           ended: () => emit({ type: 'ended' }),
           seeked: () => {
             pipeline?.reapply();
+            webos?.setPosition(el.currentTime * 1000 - delayMs);
             paintText();
           },
           error: () =>
@@ -342,16 +407,26 @@ export function videoEngine(
           document.removeEventListener('fullscreenchange', onFullscreen);
           pipeline?.close();
           pipeline = null;
+          webos?.close();
+          webos = null;
+          assId = null;
           if (drawn) {
             drawn = '';
             emit({ type: 'subtitle-text', text: '', placed: [] });
           }
         };
         onFullscreen();
-        el.src = next.url;
+        const loading = ++loadToken;
+        const begin = () => {
+          if (loading === loadToken) el.src = next.url;
+        };
+        if (webos && readsOwnSubtitles(next.source))
+          void webos.prepare(next.startMs).then(begin, begin);
+        else begin();
       },
       // Browsers keep a closed player in their media controls until its video drops the stream.
       close() {
+        loadToken++;
         detach();
         detach = () => {};
         removeElements();
@@ -389,6 +464,7 @@ export function videoEngine(
       setSubtitleDelay(ms) {
         delayMs = ms;
         shiftCues();
+        webos?.setDelay(ms);
         paintText();
       },
       setStyle({ subtitleStyle, lift }) {
@@ -410,6 +486,10 @@ export function videoEngine(
         add: async (added) => {
           checkSubtitleFile(added, SUBTITLE_TYPES);
           const cues = await readSubtitleCues(added);
+          const ass =
+            pipeline && /\.(ass|ssa)$/i.test(added.name)
+              ? await readSubtitleText(added)
+              : undefined;
           const el = video.current;
           if (!el) return;
           const track = el.addTextTrack('subtitles', added.name);
@@ -427,6 +507,7 @@ export function videoEngine(
               label: added.name,
               track,
               ...(cues.some((cue) => cue.place) && { script: cues }),
+              ...(ass && { ass }),
             },
           ];
           listTracks();

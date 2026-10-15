@@ -71,17 +71,34 @@ function writeUnsigned(stage, file) {
   writeFileSync(file, zipSync(files));
 }
 
+// libass, which the web app loads by these names on LG TVs (`src/lib/subtitles/libass.ts`).
+function stageLibass(stage) {
+  const dist = join(root, '../web/node_modules/jassub-webos5/dist');
+  const to = join(stage, 'static/jassub');
+  cpSync(
+    join(dist, 'modern/jassub.worker.min.js'),
+    join(to, 'jassub-worker.js')
+  );
+  cpSync(join(dist, 'modern/worker.min.wasm'), join(to, 'jassub-worker.wasm'));
+  cpSync(join(dist, 'default.woff2'), join(to, 'default.woff2'));
+}
+
 if (platform === 'webos') {
   const stage = stageApp('appinfo.json', (text) => {
     const { id, ...rest } = JSON.parse(text);
     return JSON.stringify({ id, version, ...rest }, null, 2);
   });
+  stageLibass(stage);
+  const service = join(out, 'webos-service');
+  rmSync(service, { recursive: true, force: true });
+  cpSync(join(root, 'webos-service'), service, { recursive: true });
   const cli = dirname(
     createRequire(import.meta.url).resolve('@webos-tools/cli/package.json')
   );
   run(process.execPath, [
     join(cli, 'bin/ares-package.js'),
     stage,
+    service,
     '--outdir',
     out,
     '--no-minify',

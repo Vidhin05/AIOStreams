@@ -51,7 +51,7 @@ export function checkSubtitleFile(file: File, types: readonly string[]): void {
 }
 
 /** A file neither marked nor valid as UTF-8 is read in the browser language's legacy encoding. */
-async function readText(file: File): Promise<string> {
+export async function readSubtitleText(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (bytes[0] === 0xff && bytes[1] === 0xfe)
     return new TextDecoder('utf-16le').decode(bytes);
@@ -67,7 +67,7 @@ async function readText(file: File): Promise<string> {
 }
 
 export async function readSubtitleCues(file: File): Promise<SubtitleCue[]> {
-  const text = await readText(file);
+  const text = await readSubtitleText(file);
   const cues = ['ass', 'ssa'].includes(extension(file.name))
     ? parseAssCues(text)
     : parseCues(text);

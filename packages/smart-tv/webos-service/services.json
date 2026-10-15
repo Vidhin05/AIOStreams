@@ -1,0 +1,10 @@
+{
+  "id": "io.github.viren070.aiostreams.service",
+  "description": "Reads byte ranges of a video for its subtitles",
+  "services": [
+    {
+      "name": "io.github.viren070.aiostreams.service",
+      "description": "Reads byte ranges of a video for its subtitles"
+    }
+  ]
+}

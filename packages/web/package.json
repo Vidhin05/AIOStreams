@@ -31,6 +31,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.6.1",
+    "jassub-webos5": "1.8.601-7",
     "motion": "^12.43.0",
     "next-themes": "^0.4.6",
     "postcss": "^8.5.29",
