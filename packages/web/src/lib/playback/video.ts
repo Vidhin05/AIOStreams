@@ -1,7 +1,13 @@
 import type React from 'react';
+import {
+  webosTextPipeline,
+  type WebosTextInfo,
+  type WebosTextPipeline,
+} from '../hosts/webos-media';
 import { checkSubtitleFile, readSubtitleCues } from '../subtitles/files';
 import { subtitleLine } from '../subtitles/style';
-import { ownTrackLabel } from './controller';
+import type { SourceInfo } from '../types';
+import { ofType, ownTrackLabel, trackLabel } from './controller';
 import type {
   EngineFactory,
   EngineFile,
@@ -29,6 +35,33 @@ const audioTracksOf = (video: HTMLVideoElement) =>
 const listed = (list: AudioTrackList) =>
   Array.from({ length: list.length }, (_, i) => list[i]);
 
+const EMBEDDED = 'embedded:';
+
+/** The file's own subtitles, in the order the TV's pipeline numbers them. */
+function embeddedSubtitles(source: SourceInfo): EngineTrack[] {
+  return ofType(source, 'Subtitle')
+    .filter((s) => s.DeliveryMethod !== 'External')
+    .map((s, i) => ({
+      id: `${EMBEDDED}${i}`,
+      type: 'subtitle' as const,
+      label: trackLabel(s, i + 1),
+      lang: s.Language ?? undefined,
+      title: s.Title ?? undefined,
+      forced: s.IsForced,
+      hearingImpaired: s.IsHearingImpaired,
+    }));
+}
+
+function pipelineSubtitles(tracks: WebosTextInfo[]): EngineTrack[] {
+  return tracks.map((track, i) => ({
+    id: `${EMBEDDED}${i}`,
+    type: 'subtitle' as const,
+    label: ownTrackLabel(track.title || track.codec, track.language, i + 1),
+    lang: track.language,
+    title: track.title,
+  }));
+}
+
 interface FileTrack {
   id: string;
   label: string;
@@ -37,7 +70,8 @@ interface FileTrack {
 
 /**
  * The page's own `<video>`. The server's subtitles are `<track>`s, and files
- * the user adds are text tracks after them.
+ * the user adds are text tracks after them. webOS never fills `textTracks`
+ * from the file, so those come from the TV's media pipeline.
  */
 export function videoEngine(
   video: React.RefObject<HTMLVideoElement | null>
@@ -46,6 +80,8 @@ export function videoEngine(
     let file: EngineFile | null = null;
     let elements: HTMLTrackElement[] = [];
     let files: FileTrack[] = [];
+    let embedded: EngineTrack[] = [];
+    let pipeline: WebosTextPipeline | null = null;
     let delayMs = 0;
     let line = subtitleLine();
     let detach = () => {};
@@ -94,6 +130,7 @@ export function videoEngine(
           lang: t.language,
           title: t.label,
         })),
+        ...embedded,
         ...files.map(({ id, label }) => ({
           id,
           type: 'subtitle' as const,
@@ -106,8 +143,15 @@ export function videoEngine(
       set({ audio: on < 0 ? null : String(on) });
     };
     const setSubtitle = (id: string | null) => {
+      const own = id?.startsWith(EMBEDDED)
+        ? Number(id.slice(EMBEDDED.length))
+        : null;
+      pipeline?.show(own);
       elements.forEach((e, i) => {
-        e.track.mode = file?.subtitles[i]?.id === id ? 'showing' : 'disabled';
+        e.track.mode =
+          own === null && file?.subtitles[i]?.id === id
+            ? 'showing'
+            : 'disabled';
       });
       for (const f of files)
         f.track.mode = f.id === id ? 'showing' : 'disabled';
@@ -128,6 +172,19 @@ export function videoEngine(
         removeElements();
         file = next;
         delayMs = next.subtitleDelayMs;
+        embedded = [];
+        pipeline = webosTextPipeline(el);
+        if (pipeline) {
+          embedded = embeddedSubtitles(next.source);
+          pipeline.watch((tracks) => {
+            // The same count keeps the names already on these tracks. An empty
+            // report must not wipe tracks the file already listed.
+            if (!tracks.length || tracks.length === embedded.length) return;
+            embedded = pipelineSubtitles(tracks);
+            listTracks();
+            emit({ type: 'loaded' });
+          });
+        }
         elements = next.subtitles.map((s) => {
           const track = document.createElement('track');
           track.kind = 'subtitles';
@@ -171,6 +228,7 @@ export function videoEngine(
           volumechange: () => set({ volume: el.volume, muted: el.muted }),
           ratechange: () => set({ rate: el.playbackRate }),
           ended: () => emit({ type: 'ended' }),
+          seeked: () => pipeline?.reapply(),
           error: () =>
             emit({
               type: 'failed',
@@ -198,6 +256,8 @@ export function videoEngine(
             audio?.removeEventListener(event, listTracks);
           for (const e of elements) e.removeEventListener('load', onTrackLoad);
           document.removeEventListener('fullscreenchange', onFullscreen);
+          pipeline?.close();
+          pipeline = null;
         };
         onFullscreen();
         el.src = next.url;
