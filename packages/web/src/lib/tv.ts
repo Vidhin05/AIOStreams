@@ -3,14 +3,17 @@ import { isTextField } from './input/focus';
 
 /**
  * A TV lays the page out at 1280 x 720 whatever its resolution, a size read
- * from across a room, which also gives it the wide layout.
+ * from across a room, which also gives it the wide layout. webOS is the
+ * exception: its app runs at 1920 x 1080, and the page uses that.
  */
 export function setupTv(): void {
   if (!currentHost().tv) return;
   document.documentElement.dataset.tv = '';
-  document
-    .querySelector('meta[name="viewport"]')
-    ?.setAttribute('content', 'width=1280, viewport-fit=cover');
+  if (currentHost().name !== 'webos') {
+    document
+      .querySelector('meta[name="viewport"]')
+      ?.setAttribute('content', 'width=1280, viewport-fit=cover');
+  }
   keyboardOnSelect();
 }
 
